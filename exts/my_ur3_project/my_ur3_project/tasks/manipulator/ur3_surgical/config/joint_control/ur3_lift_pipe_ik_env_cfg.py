@@ -50,7 +50,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Left_Robot",
         spawn=sim_utils.UsdFileCfg(
             # usd_path=f"/home/yhy/DVRK/ur3_scissor/ur3TipCam_pro1_1.usd",
-            usd_path=f"/home/yhy/DVRK/ur3_scissor/ur3TipCam_pro1_1_v0.usd",
+            usd_path=f"/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/ur3TipCam_pro1_1_v0.usd",
             activate_contact_sensors=False,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -169,7 +169,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     pipe  = AssetBaseCfg(
         prim_path="/World/envs/env_.*/pipe",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/yhy/DVRK/ur3_scissor/pipe_stl.usd",
+            usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/pipe_stl.usd",
             scale=(0.5, 0.5, 0.08),
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, -0.29, -0.25),rot =  (0.7071, 0.0000,0.0, 0.7071)),
@@ -180,7 +180,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/object",
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.29, -0.2354), rot=pipe_quat),
         spawn=UsdFileCfg(
-            usd_path=f"/home/yhy/DVRK/ur3_scissor/object1.usd",
+            usd_path=f"/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/object1.usd",
             # scale=(0.008, 0.015, 0.01),
             scale=(0.012, 0.02, 0.012),
             rigid_props=RigidBodyPropertiesCfg(
