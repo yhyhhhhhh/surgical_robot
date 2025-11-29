@@ -1,7 +1,7 @@
 """Script to play a checkpoint if an RL agent from RSL-RL."""
 
 """Launch Isaac Sim Simulator first."""
-
+import cv2
 import argparse
 
 from omni.isaac.lab.app import AppLauncher
@@ -16,13 +16,17 @@ parser.add_argument("--video_length", type=int, default=200, help="Length of the
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
+parser.add_argument("--task", type=str, default="My-Isaac-Ur3-Pipe-Ik-Act-Direct-v0", help="Name of the task.")
+parser.add_argument("--log/enabled", type=bool, default=False, help="RL Policy training iterations.")
+parser.add_argument("--log/outputStreamLevel", type=str, default="error", help="RL Policy training iterations.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+args_cli.enable_cameras = True
+args_cli.logger = False
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -48,10 +52,11 @@ from omni.isaac.lab_tasks.utils.wrappers.rsl_rl import (
     export_policy_as_jit,
     export_policy_as_onnx,
 )
-
+from omni.isaac.core.utils.extensions import enable_extension
 # Import extensions to set up environment tasks
-import ext_template.tasks  # noqa: F401
-
+import my_ur3_project.tasks  # noqa: F401
+enable_extension("omni.isaac.debug_draw")
+import omni.isaac.debug_draw._debug_draw as omni_debug_draw
 
 def main():
     """Play with RSL-RL agent."""
@@ -64,8 +69,11 @@ def main():
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
+    # log_root_path = "/home/yhy/DVRK/IsaacLabExtensionTemplate/logs/rsl_rl/ur3_reach_direct/"
+    log_root_path = "/home/yhy/log/"
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
-    resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
+    # resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, "model_999.pt")
+    resume_path =  "/home/yhy/log/2025-05-20_01-43-22/model_500.pt"
     log_dir = os.path.dirname(resume_path)
 
     # create isaac environment
@@ -99,12 +107,12 @@ def main():
 
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(
-        ppo_runner.alg.actor_critic, ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.pt"
-    )
-    export_policy_as_onnx(
-        ppo_runner.alg.actor_critic, normalizer=ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.onnx"
-    )
+    # export_policy_as_jit(
+    #     ppo_runner.alg.actor_critic, ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.pt"
+    # )
+    # export_policy_as_onnx(
+    #     ppo_runner.alg.actor_critic, normalizer=ppo_runner.obs_normalizer, path=export_model_dir, filename="policy.onnx"
+    # )
 
     # reset environment
     obs, _ = env.get_observations()
