@@ -21,15 +21,15 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     
     # env
     episode_length_s = 3
-    decimation = 5  # 5
+    decimation = 2  # 5
     action_space = 5
 
-    observation_space = 38
+    observation_space = 28
     state_space = 0
 
     # simulation
     sim: SimulationCfg = SimulationCfg(
-        dt=1 / 500,  # 1/500
+        dt=1 / 200,  # 1/500
         render_interval=decimation,
         disable_contact_processing=False,
         physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -42,7 +42,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     )
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=10.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=5.0, replicate_physics=True)
 
     
     # robot
@@ -57,7 +57,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
                 max_depenetration_velocity=5.0,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=False, solver_position_iteration_count=256, solver_velocity_iteration_count=256
+                enabled_self_collisions=False, solver_position_iteration_count=32, solver_velocity_iteration_count=8
             ),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
@@ -237,22 +237,22 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
         ),
     )
 
-    room = AssetBaseCfg(
-        prim_path="/World/envs/env_.*/room",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/OR_scene_s0253_ct_relabel_resample1_syn_seed6_postprocess/operating_room.usd",
-            scale=(0.01, 0.01, 0.01),
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(
-            pos=(0.0, 0.0, -0.9),
-            rot=(0.707, 0.707, 0.0, 0.0),
-        ),
-    )
+    # room = AssetBaseCfg(
+    #     prim_path="/World/envs/env_.*/room",
+    #     spawn=sim_utils.UsdFileCfg(
+    #         usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/OR_scene_s0253_ct_relabel_resample1_syn_seed6_postprocess/operating_room.usd",
+    #         scale=(0.01, 0.01, 0.01),
+    #     ),
+    #     init_state=AssetBaseCfg.InitialStateCfg(
+    #         pos=(0.0, 0.0, -0.9),
+    #         rot=(0.707, 0.707, 0.0, 0.0),
+    #     ),
+    # )
 
     # ground plane
     ground = AssetBaseCfg(
         prim_path="/World/GroundPlane",
-        spawn=sim_utils.GroundPlaneCfg(),
+        spawn=sim_utils.GroundPlaneCfg(usd_path=f"exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/default_environment.usd"),
         init_state=AssetBaseCfg.InitialStateCfg(
             pos=(0.0, 0.0, -0.9),
         ),

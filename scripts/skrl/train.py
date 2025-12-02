@@ -23,7 +23,7 @@ parser.add_argument("--video", action="store_true", default=False, help="Record 
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default="My-Isaac-Ur3-Pipe-Ik-Act-Direct-v0", help="Name of the task.")
+parser.add_argument("--task", type=str, default="My-Isaac-Ur3-PipeRel-Ik-RL-Direct-v0", help="Name of the task.")
 parser.add_argument("--seed", type=int, default=42, help="Seed used for the environment")
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
@@ -48,7 +48,7 @@ parser.add_argument(
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
-args_cli.enable_cameras = True
+args_cli.enable_cameras = False
 if args_cli.video:
     args_cli.enable_cameras = True
 # args_cli.headless=True
