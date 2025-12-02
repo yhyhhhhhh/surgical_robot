@@ -117,7 +117,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
                 velocity_limit=3.0,
                 effort_limit=100.0,          # ② 扭矩上限调高
                 stiffness=800.0,            # ③ KP/KD 更硬
-                damping=40,
+                damping=80,
             ),
             # "arm": ImplicitActuatorCfg(
             #     joint_names_expr=['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'],
@@ -129,7 +129,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
             "tip": ImplicitActuatorCfg(
                 joint_names_expr=["tip_joint"],
                 velocity_limit=3.0,
-                effort_limit=10.0,
+                effort_limit=5.0,
                 stiffness=200.0,
                 damping=20.0,
             ),
@@ -184,8 +184,8 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
             # scale=(0.008, 0.015, 0.01),
             scale=(0.012, 0.02, 0.012),
             rigid_props=RigidBodyPropertiesCfg(
-                solver_position_iteration_count=128,
-                solver_velocity_iteration_count=128,
+                solver_position_iteration_count=32,
+                solver_velocity_iteration_count=8,
                 max_angular_velocity=200,
                 max_linear_velocity=200,
                 max_depenetration_velocity=1.0,
