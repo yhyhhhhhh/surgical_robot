@@ -547,3 +547,210 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 4) 点积得到轴向深度
         d_axial = torch.sum(delta * self.u_axis, dim=1)  # (N,)
         return d_axial
+
+    def _world_to_pipe_coords(self, pos_w: torch.Tensor):
+        """世界坐标 → 管道坐标 (s, r, theta)。
+
+        Args:
+            pos_w: (N,3) 世界坐标下的位置
+
+        Returns:
+            s:   (N,1) 轴向深度（>0 在管内）
+            r:   (N,1) 径向距离
+            th:  (N,1) 截面内极角
+            x_r: (N,1) 径向向量在 x 轴上的 x 分量
+            y_r: (N,1) 径向向量在 y 轴上的 y 分量
+        """
+        # self.pipe_top_pos: (N,3)
+        # self.u_axis:      (N,3)
+        delta = pos_w - self.pipe_top_pos  # (N,3)
+
+        # 轴向深度：沿管道轴的投影
+        s = torch.sum(delta * self.u_axis, dim=-1, keepdim=True)  # (N,1)
+
+        # 去掉轴向分量，得到截面平面的径向向量
+        radial = delta - s * self.u_axis  # (N,3)
+        x_r = radial[..., 0:1]
+        y_r = radial[..., 1:2]
+
+        r = torch.sqrt(x_r * x_r + y_r * y_r + 1e-8)
+        th = torch.atan2(y_r, x_r)
+
+        return s, r, th, x_r, y_r
+
+    @torch.no_grad()
+    def compute_validation_reward(self) -> torch.Tensor:
+        """使用强化学习版本的奖励设计，对当前状态打分并记录每个分量，方便可视化。
+
+        返回:
+            rewards: (num_envs,) 每个环境当前时刻的验证奖励（总和）。
+        """
+        device = self.device
+
+        # ===== 和管道有关的常数（按 RL 环境的设定来） =====
+        pipe_radius = 0.006          # m
+        pipe_safety_margin = 0.001   # m
+        pipe_length = 0.04           # m
+
+        # ===== 末端 & 物体的世界坐标 =====
+        ee_pos_w = self._robot.data.body_pos_w[:, self.ee_id, 0:3]
+        obj_pos_w = self.scene.rigid_objects["object"].data.body_pos_w[:, 0, :3]
+
+        # 3D 距离
+        ee_dist = torch.norm(ee_pos_w - obj_pos_w, dim=1)  # (N,)
+
+        # ===== 管道坐标系下的位置 =====
+        s_e, r_e, th_e, _, _ = self._world_to_pipe_coords(ee_pos_w)
+        s_o, r_o, th_o, _, _ = self._world_to_pipe_coords(obj_pos_w)
+
+        s_e = s_e.squeeze(-1)
+        r_e = r_e.squeeze(-1)
+        th_e = th_e.squeeze(-1)
+
+        s_o = s_o.squeeze(-1)
+        r_o = r_o.squeeze(-1)
+        th_o = th_o.squeeze(-1)
+
+        # 相对 (s, r)
+        ds = torch.abs(s_e - s_o)
+        dr = torch.abs(r_e - r_o)
+        d_pipe = torch.sqrt(ds * ds + dr * dr + 1e-8)
+
+        # ==========================
+        # 1) 管道平面接近奖励（末端 vs 物体）
+        # ==========================
+        reach_scale = 80.0
+        reach_reward = torch.exp(-reach_scale * d_pipe)
+
+        # ==========================
+        # 2) 管口引导（从管外靠近管口）
+        # ==========================
+        outside = (s_e < 0.0)  # 管外区域
+        k_s = 10.0
+        k_r = 40.0
+        entry_reward = torch.exp(-k_s * torch.abs(s_e)) * torch.exp(-k_r * r_e)
+        entry_reward = entry_reward * outside.float()
+
+        # ==========================
+        # 3) 管内居中 / 避免贴壁
+        # ==========================
+        in_pipe = (s_e > 0.0) & (s_e < (pipe_length - pipe_safety_margin))
+        r_norm = r_e / (pipe_radius + 1e-6)
+        center_reward = torch.exp(-4.0 * (r_norm ** 2)) * in_pipe.float()
+
+        # ==========================
+        # 4) 抓取相关奖励
+        # ==========================
+        # 4.1 3D 接近物体（只在管内生效）
+        is_in_pipe = (s_e > 0.0) & (r_e < pipe_radius)
+
+        grasp_reach_scale = 40.0
+        # 注意：这里直接用 ee_dist，避免 self.ee_dist 没有定义的问题
+        raw_grasp_reward = torch.exp(-grasp_reach_scale * ee_dist)
+        grasp_reach_reward = raw_grasp_reward * is_in_pipe.float()
+
+        # 4.2 张开 / 闭合状态
+        if hasattr(self, "gripper_action"):
+            grip_cmd = self.gripper_action  # (N,1)
+        else:
+            # 兜底：取最后一个关节位置当夹爪
+            grip_cmd = self._robot.data.joint_pos[:, -1:].clone()
+
+        gripper_min = -0.28
+        gripper_max = -0.10
+        grip_norm = (grip_cmd - gripper_min) / (gripper_max - gripper_min + 1e-6)
+        grip_norm = torch.clamp(grip_norm, 0.0, 1.0).squeeze(-1)  # 0=闭合,1=张开
+
+        # 真正贴近物体（准备夹）
+        near_for_grasp = (ee_dist < 0.01).float()
+        # 稍远一点，用来对准
+        middle_near = ((ee_dist > 0.01) & (ee_dist < 0.03)).float()
+
+        # 靠得很近时，鼓励闭合
+        grasp_close_reward = near_for_grasp * (1.0 - grip_norm)
+        # 稍远时，鼓励张开
+        pre_grasp_open_reward = middle_near * grip_norm
+
+        # ==========================
+        # 5) 抬起物体的奖励
+        # ==========================
+        obj_z = obj_pos_w[:, 2] - self.scene.env_origins[:, 2]
+        init_z = self.scene.rigid_objects["object"].data.default_root_state[:, 2]
+        object_lift = torch.clamp(obj_z - init_z, min=0.0)
+
+        close_for_lift = (ee_dist < 0.02).float()
+        lift_reward = object_lift * 100.0 * close_for_lift
+
+        # ==========================
+        # 6) 鼻腔外距离奖励（把物体往外拖）
+        # ==========================
+        xy = obj_pos_w[:, :2] - self.scene.env_origins[:, :2]
+        target_xy = torch.tensor([0.0, -0.29], device=device).repeat(self.num_envs, 1)
+        dist_xy = torch.norm(xy - target_xy, dim=1)
+
+        move_out_reward = torch.clamp(dist_xy - 0.03, min=0.0) * 3.0
+
+        # ==========================
+        # 7) 成功条件 + 大奖励
+        # ==========================
+        object_outside = dist_xy > 0.1
+        ee_close = ee_dist < 0.01
+        success = torch.logical_and(object_outside, ee_close)
+        success_reward = success.float() * 40.0
+
+        # ==========================
+        # 8) 汇总总奖励
+        # ==========================
+        rewards = (
+            0.5 * entry_reward +
+            0.8 * reach_reward +
+            0.5 * center_reward +
+            1.2 * grasp_reach_reward +
+            0.3 * pre_grasp_open_reward +
+            0.7 * grasp_close_reward +
+            1.0 * lift_reward +
+            1.0 * move_out_reward +
+            1.0 * success_reward
+        )
+
+        # ==========================
+        # 9) 写入 extras，记录奖励各分量 & 关键几何信息
+        # ==========================
+        # 注意：这里只记录均值，方便在 TensorBoard 或你自己的脚本中画曲线
+        self.extras["val_reward_log"] = {
+            # 总奖励
+            "val/total":              rewards.mean(),
+
+            # 各项奖励（未再乘 batch 大小）
+            "val/reach_pipe":         reach_reward.mean(),
+            "val/entry":              entry_reward.mean(),
+            "val/center_pipe":        center_reward.mean(),
+            "val/grasp_reach_3d":     grasp_reach_reward.mean(),
+            "val/pre_grasp_open":     pre_grasp_open_reward.mean(),
+            "val/grasp_close":        grasp_close_reward.mean(),
+            "val/lift":               lift_reward.mean(),
+            "val/move_out":           move_out_reward.mean(),
+            "val/success":            success_reward.mean(),
+
+            # 距离 / 几何信息
+            "val/ee_obj_dist":        ee_dist.mean(),
+            "val/d_pipe":             d_pipe.mean(),
+            "val/pipe_s_ee":          s_e.mean(),
+            "val/pipe_r_ee":          r_e.mean(),
+            "val/pipe_s_obj":         s_o.mean(),
+            "val/pipe_r_obj":         r_o.mean(),
+            "val/r_norm":             r_norm.mean(),
+            "val/object_lift_h":      object_lift.mean(),
+            "val/dist_xy":            dist_xy.mean(),
+
+            # 夹爪 & 区域占比
+            "val/grip_norm_mean":     grip_norm.mean(),
+            "val/near_for_grasp":     near_for_grasp.mean(),
+            "val/middle_near":        middle_near.mean(),
+            "val/in_pipe_ratio":      in_pipe.float().mean(),
+            "val/outside_ratio":      outside.float().mean(),
+            "val/success_rate":       success.float().mean(),
+        }
+
+        return rewards
+

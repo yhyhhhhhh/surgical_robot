@@ -24,7 +24,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     decimation = 2  # 5
     action_space = 5
 
-    observation_space = 28
+    observation_space = 33
     state_space = 0
 
     # simulation
@@ -176,7 +176,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     )
 
     pipe_pos = (0.0, -0.29, -0.25)
-
+    # pipe的尺寸(0.0149, 0.015, 0.032)
     pipe = AssetBaseCfg(
         prim_path="/World/envs/env_.*/pipe",
         spawn=sim_utils.UsdFileCfg(
@@ -284,4 +284,4 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     }
 
     make_quat_unique = True
-    debug_vis = True
+    debug_vis = False

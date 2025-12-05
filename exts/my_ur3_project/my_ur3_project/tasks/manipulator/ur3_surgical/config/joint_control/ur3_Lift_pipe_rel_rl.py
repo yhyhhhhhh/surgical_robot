@@ -94,13 +94,13 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         # 鼻腔顶部位置 & 轴向（z-）
         self.pipe_top_pos, _ = self.get_pipe_top_pose()
-        self.u_axis = torch.tensor([0.0, 0.0, 1.0], device=self.device).unsqueeze(0).repeat(self.num_envs, 1)
+        self.u_axis = torch.tensor([0.0, 0.0, -1.0], device=self.device).unsqueeze(0).repeat(self.num_envs, 1)
 
         # === 管道 / 动作相关参数 ===
         # 管道半径与长度（根据实际模型稍微调一下）
-        self.pipe_radius = 0.006          # m
-        self.pipe_safety_margin = 0.001   # 离管壁的安全间距
-        self.pipe_length = 0.04           # m，可用的管长
+        self.pipe_radius = 0.0075         # m
+        self.pipe_safety_margin = 0.000   # 离管壁的安全间距
+        self.pipe_length = 0.032           # m，可用的管长
 
         # 允许的轴向深度范围（s>0 在管内）
         self.s_min = -0.01
@@ -177,7 +177,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 机械臂
         self._robot = Articulation(self.cfg.left_robot)
 
-        # 摄像头
+        # # 摄像头
         # self._camera = Camera(cfg=self.cfg.camera)
         # self.scene.sensors["Camera"] = self._camera
 
@@ -399,18 +399,30 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return self.terminated, truncated
 
-    # ------------------------------------------------------------------
-    # reward shaping（基于管道坐标）
-    # ------------------------------------------------------------------
+
     def _get_rewards(self) -> torch.Tensor:
-        # 末端与物体位置（世界系）
+        """
+        改进版本 reward（重点：小距离更精细的引导）：
+        1) entry：从管外引导到管口附近
+        2) reach_pipe：在管坐标系下靠近物体 (s, r)
+        3) grasp_reach_3d：3D 距离接近（尤其在小距离更敏感）
+        4) pre_grasp_open / grasp_close：中距离张开、近距离闭合（改为平滑权重）
+        5) lift：抬高物体（核心奖励），gating 用 ee_dist < 0.007
+        6) success：任务完成大奖励
+        7) outside_penalty：在管外跑远的惩罚
+        """
+
+        device = self.device
+
+        # ------------------- 末端 / 物体世界坐标 -------------------
         ee_pos_w = self._robot.data.body_pos_w[:, self.ee_id, 0:3]
         obj_pos_w = self.scene.rigid_objects["object"].data.body_pos_w[:, 0, :3]
 
-        # 记录 3D 距离（给 dones 用）
-        self.ee_dist = torch.norm(ee_pos_w - obj_pos_w, dim=1)
+        # 3D 距离
+        ee_dist = torch.norm(ee_pos_w - obj_pos_w, dim=1)  # (N,)
+        self.ee_dist = ee_dist
 
-        # --- 1) 管道坐标下的接近奖励（末端 vs 物体） ---
+        # ------------------- 管道坐标 (s, r, θ) -------------------
         s_e, r_e, th_e, _, _ = self._world_to_pipe_coords(ee_pos_w)
         s_o, r_o, th_o, _, _ = self._world_to_pipe_coords(obj_pos_w)
 
@@ -422,73 +434,143 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         r_o = r_o.squeeze(-1)
         th_o = th_o.squeeze(-1)
 
+        # 相对 (s, r)
         ds = torch.abs(s_e - s_o)
         dr = torch.abs(r_e - r_o)
         d_pipe = torch.sqrt(ds * ds + dr * dr + 1e-8)
 
-        reach_scale = 80.0
-        reach_reward = torch.exp(-reach_scale * d_pipe)
+        # 是否在管内（只要 s>0 且 r<半径 就算在管内）
+        is_in_pipe = (s_e > 0.0) & (r_e < self.pipe_radius)
+        inpipe_base_reward = is_in_pipe.float()
 
-        # --- 2) 管口引导奖励（从管外靠近管口）---
-        # outside 阶段: s_e < 0
-        outside = (s_e < 0.0)
-        # 越接近 s=0 且 r 越小，奖励越大
-        k_s = 20.0
-        k_r = 80.0
+        # ------------------- 1) entry 引导（从管外到管口） -------------------
+        # 全局：末端到管口的距离（防止在外面跑太远）
+        ee_to_pipe = torch.norm(ee_pos_w - self.pipe_top_pos, dim=1)
+
+        outside = ~is_in_pipe
+        k_s = 10.0
+        k_r = 40.0
         entry_reward = torch.exp(-k_s * torch.abs(s_e)) * torch.exp(-k_r * r_e)
-        entry_reward = entry_reward * outside.float()
 
-        # --- 3) 管内居中 / 避免贴壁 ---
-        in_pipe = (s_e > 0.0) & (s_e < (self.pipe_length - self.pipe_safety_margin))
-        r_norm = r_e / (self.pipe_radius + 1e-6)
-        center_reward = torch.exp(-4.0 * (r_norm ** 2)) * in_pipe.float()
+        # “跑太远”惩罚，只在管外生效
+        outside_penalty = -0.5 * torch.clamp(ee_to_pipe - 0.20, min=0.0) * outside.float()
 
-        # --- 4) 把物体抬起来的奖励（和之前类似） ---
+        # ------------------- 2) 接近奖励（管坐标 + 3D，小距离更精细） -------------------
+        # 2.1 管道平面接近物体 (s, r)
+        reach_scale = 80.0
+        reach_pipe_reward = torch.exp(-reach_scale * d_pipe)
+
+        # 2.2 3D 接近（特别强调小距离）
+        # 设定几个距离阈值：
+        near_thr = 0.007   # 你观测到“足够近”的半径
+        mid_thr  = 0.02    # 4cm 内认为是中距离
+
+        # 粗尺度：0 ~ 4cm 线性拉近
+        d_far_norm = torch.clamp(ee_dist / mid_thr, 0.0, 1.0)
+        reach_far  = 1.0 - d_far_norm                   # [0,1]
+
+        # 细尺度：0 ~ 0.7cm 范围内，再给一层更陡的 shaping
+        d_near_norm = torch.clamp(ee_dist / near_thr, 0.0, 1.0)
+        reach_near  = 1.0 - d_near_norm                 # [0,1]，越小越接近 1
+
+        # 合成 3D 接近奖励（只在管内起作用）
+        grasp_reach_reward = (
+            0.3 * reach_far +
+            0.7 * reach_near
+        ) * is_in_pipe.float()
+
+        # ------------------- 3) 抓取行为：开 / 闭（小距离权重更细腻） -------------------
+        # 夹爪归一化：0=闭合, 1=张开
+        grip_norm = (self.gripper_cmd - self.gripper_min) / (self.gripper_max - self.gripper_min + 1e-6)
+        grip_norm = torch.clamp(grip_norm, 0.0, 1.0).squeeze(-1)
+
+        # 三段距离：
+        #   far: ee_dist >= mid_thr          -> 不特别管抓取姿态
+        #   mid: near_thr <= ee_dist < mid_thr  -> 鼓励张开
+        #   near: ee_dist < near_thr            -> 鼓励闭合，且越近权重越大
+        far_mask  = (ee_dist >= mid_thr).float()
+        mid_mask  = ((ee_dist >= near_thr) & (ee_dist < mid_thr)).float()
+        near_mask = (ee_dist < near_thr).float()
+
+        # 中距离：希望张开 -> grip_norm 越大越好
+        # 距离越接近 near_thr，张开的奖励越大
+        # t_mid 在 [0,1]，表示“离 near_thr 有多近”
+        t_mid  = torch.zeros_like(ee_dist)
+        denom = (mid_thr - near_thr + 1e-6)
+        t_mid  = (mid_thr - ee_dist) / denom           # ee_dist=mid_thr -> 0, =near_thr ->1
+        t_mid  = torch.clamp(t_mid, 0.0, 1.0)
+        pre_grasp_open_reward = mid_mask * t_mid * grip_norm  # 越靠近 near_thr、越张开越好
+
+        # 近距离：希望闭合 -> grip_norm 越小越好
+        # 用 proximity 表示“在 near_thr 内接近物体的程度”
+        proximity = torch.clamp((near_thr - ee_dist) / (near_thr + 1e-6), 0.0, 1.0)
+        grasp_close_reward = near_mask * proximity * (1.0 - grip_norm)
+
+        # ------------------- 4) 抬高物体 -------------------
         obj_z = obj_pos_w[:, 2] - self.scene.env_origins[:, 2]
         init_z = self.scene.rigid_objects["object"].data.default_root_state[:, 2]
         object_lift = torch.clamp(obj_z - init_z, min=0.0)
-        lift_reward = object_lift * 5.0 * (self.ee_dist < 0.02).float()
 
-        # --- 5) 鼻腔外距离奖励（保持原逻辑） ---
-        xy = obj_pos_w[:, :2] - self.scene.env_origins[:, :2]
-        target_xy = torch.tensor([0.0, -0.29], device=self.device).repeat(self.num_envs, 1)
-        dist_xy = torch.norm(xy - target_xy, dim=1)
-        self.dist = dist_xy
-        move_out_reward = torch.clamp(dist_xy - 0.03, min=0.0) * 3.0
+        # 只有在“足够近”的时候才启用 lift（用同一个 near_thr）
+        close_for_lift = (ee_dist < 0.02).float()
 
-        # --- 6) 成功大奖励 ---
-        success_reward = self.terminated.float() * 20.0
+        # 可以减去一个很小的 offset，避免小抖动也拿 lift 分
 
-        # --- 汇总 ---
+        lift_reward = object_lift * 5000.0 * close_for_lift
+
+        # ------------------- 5) 掉落惩罚（可选，先关掉也行） -------------------
+        # if not hasattr(self, "prev_object_lift"):
+        #     self.prev_object_lift = torch.zeros_like(object_lift)
+        #
+        # lift_drop = torch.clamp(self.prev_object_lift - object_lift, min=0.0)
+        # was_lifted = (self.prev_object_lift > 0.005).float()
+        # drop_penalty = -10.0 * lift_drop * was_lifted
+        #
+        # self.prev_object_lift = object_lift.detach()
+
+        # ------------------- 6) 成功奖励 -------------------
+        # 这里你原来是用高度 > 0.04 表示“出了鼻腔”
+        object_outside = object_lift > 0.04
+        ee_close = ee_dist < 0.01
+        success = torch.logical_and(object_outside, ee_close)
+        self.terminated = success
+        success_reward = success.float() * 40.0
+
+        # ------------------- 7) 汇总总奖励（含权重） -------------------
         rewards = (
-            0.6 * entry_reward +    # 新增的管口引导（只在外面起作用）
-            1.0 * reach_reward +
-            0.5 * center_reward +
-            1.0 * lift_reward +
-            1.0 * move_out_reward +
-            1.0 * success_reward
+            0.5 * entry_reward +
+            0.8 * reach_pipe_reward +
+            1.0 * inpipe_base_reward +
+            10 * grasp_reach_reward +      # 3D 接近（小距离有更强梯度）
+            0.2 * pre_grasp_open_reward +   # 保留 grasp 开启
+            0.5 * grasp_close_reward +      # 保留 grasp 关闭，权重适中
+            1.0 * lift_reward +             # 核心：抬高物体
+            1.0 * success_reward +
+            outside_penalty                 # 负的
+            # + drop_penalty                # 如要启用再加上
         )
-        # ---------------------
-        # 2) 在这里写 log（关键）
-        # ---------------------
-        # 注意：要写标量，一般用 mean() 就行
-        self.extras["log"] = {
-            # 各个 reward term 的均值
-            "reward/total":          rewards.mean(),
-            "reward/reach_pipe":     reach_reward.mean(),
-            "reward/center_pipe":    center_reward.mean(),
-            "reward/lift":           lift_reward.mean(),
-            "reward/move_out":       move_out_reward.mean(),
-            "reward/success":        success_reward.mean(),
 
-            # 一些你关心的调试量
-            "metrics/ee_obj_dist":   self.ee_dist.mean(),
-            "metrics/pipe_s_ee":     s_e.mean(),        # 末端沿轴方向平均位置（>0 在管内）
-            "metrics/pipe_r_ee":     r_e.mean(),        # 末端离管中心的平均半径
-            "metrics/pipe_s_obj":    s_o.mean(),
-            "metrics/pipe_r_obj":    r_o.mean(),
-            "metrics/success_rate":  self.terminated.float().mean(),
+        # ------------------- 8) 日志：方便可视化 -------------------
+        self.extras["log"] = {
+            "reward/total":             rewards.mean(),
+            "reward/entry":             0.5 * entry_reward.mean(),
+            "reward/reach_pipe":        0.8 * reach_pipe_reward.mean(),
+            "reward/grasp_reach_3d":    0.8 * grasp_reach_reward.mean(),
+            "reward/pre_grasp_open":    0.2 * pre_grasp_open_reward.mean(),
+            "reward/grasp_close":       0.5 * grasp_close_reward.mean(),
+            "reward/lift":              lift_reward.mean(),
+            "reward/success":           success_reward.mean(),
+            "reward/outside_pen":       outside_penalty.mean(),
+            # "reward/drop_penalty":    drop_penalty.mean() if 'drop_penalty' in locals() else 0.0,
+
+            "metrics/ee_obj_dist":      ee_dist.mean(),
+            "metrics/object_lift_mean": object_lift.mean(),
+            "metrics/object_lift_max":  object_lift.max(),
+            "metrics/in_pipe_ratio":    is_in_pipe.float().mean(),
+            "metrics/outside_ratio":    outside.float().mean(),
+            "metrics/success_rate":     success.float().mean(),
         }
+
         return rewards
 
     # ------------------------------------------------------------------
@@ -563,6 +645,10 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         obj_state = self._object.data.body_state_w[:, 0]
         obj_pos_w = obj_state[:, 0:3]
 
+        # 3D 距离（额外观测）
+        ee_obj_dist = torch.norm(ee_pos_w - obj_pos_w, dim=1)
+        ee_obj_dist = torch.clamp(ee_obj_dist, 0.0, 0.1)
+
         # 转到管道坐标
         s_e, r_e, th_e, _, _ = self._world_to_pipe_coords(ee_pos_w)
         s_o, r_o, th_o, _, _ = self._world_to_pipe_coords(obj_pos_w)
@@ -590,12 +676,22 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 是否在管内
         in_pipe = ((s_e > 0.0) & (s_e < (self.pipe_length - self.pipe_safety_margin))).float()
 
+        # 距离管壁的余量
+        margin_to_wall = (self.pipe_radius - r_e).unsqueeze(-1)
+
+        # 归一化的 s / r
+        s_e_norm = (s_e / (self.pipe_length + 1e-6)).unsqueeze(-1)
+        r_e_norm = (r_e / (self.pipe_radius + 1e-6)).unsqueeze(-1)
+
         # 关节
         joint_pos = self._robot.data.joint_pos - self._robot.data.default_joint_pos
         joint_vel = self._robot.data.joint_vel - self._robot.data.default_joint_vel
 
         # 抓手命令（归一化）
         grip_norm = (self.gripper_cmd - self.gripper_min) / (self.gripper_max - self.gripper_min + 1e-6)
+
+        # （可选）归一化时间步
+        phase = (self.episode_length_buf.float() / self.max_episode_length).unsqueeze(-1)
 
         obs = torch.cat(
             (
@@ -604,6 +700,11 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
                 r_e.unsqueeze(-1),
                 cos_th_e.unsqueeze(-1),
                 sin_th_e.unsqueeze(-1),
+
+                # 归一化版本
+                s_e_norm,
+                r_e_norm,
+                margin_to_wall,
 
                 # 物体在管道系下
                 s_o.unsqueeze(-1),
@@ -617,6 +718,9 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
                 cos_dth.unsqueeze(-1),
                 sin_dth.unsqueeze(-1),
 
+                # 3D 距离
+                ee_obj_dist.unsqueeze(-1),
+
                 # 是否在管内
                 in_pipe.unsqueeze(-1),
 
@@ -626,10 +730,14 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
                 # 抓手命令
                 grip_norm,
+
+                # 可选：阶段
+                phase,
             ),
             dim=-1,
         )
         return {"policy": torch.clamp(obs, -5.0, 5.0)}
+
 
     # ------------------------------------------------------------------
     # debug 可视化

@@ -20,9 +20,9 @@ from .utils.robot_ik_fun import DifferentialInverseKinematicsActionCfg, Differen
 class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     
     # env
-    episode_length_s = 3
+    episode_length_s = 5
     decimation = 5  # 5
-    action_space = 5
+    action_space = 3
 
     observation_space = 38
     state_space = 0
@@ -50,7 +50,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Left_Robot",
         spawn=sim_utils.UsdFileCfg(
             # usd_path=f"/home/yhy/DVRK/ur3_scissor/ur3TipCam_pro1_1.usd",
-            usd_path=f"/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/ur3TipCam_pro1_1_v0.usd",
+            usd_path=f"/home/yhy/DVRK/ur3_scissor/ur3TipCam_pro1_1_v0.usd",
             activate_contact_sensors=False,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -117,7 +117,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
                 velocity_limit=3.0,
                 effort_limit=100.0,          # ② 扭矩上限调高
                 stiffness=800.0,            # ③ KP/KD 更硬
-                damping=80.0,
+                damping=40,
             ),
             # "arm": ImplicitActuatorCfg(
             #     joint_names_expr=['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'],
@@ -129,7 +129,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
             "tip": ImplicitActuatorCfg(
                 joint_names_expr=["tip_joint"],
                 velocity_limit=3.0,
-                effort_limit=5.0,
+                effort_limit=10.0,
                 stiffness=200.0,
                 damping=20.0,
             ),
@@ -157,54 +157,35 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
         width=640,
         spawn=None,
     )
+    
+        
+    # 计算pipe的参数信息
+    roll = torch.tensor(0, device=torch.device('cuda'))   # Roll in radians
+    pitch = torch.tensor(0, device=torch.device('cuda'))   # Pitch in radians
+    yaw = torch.tensor(1.57, device=torch.device('cuda'))     # Yaw in radians
 
-    # -------------------------
-    # 计算 pipe 的姿态（只在这里用 tensor，结果转成 tuple[float]）
-    # -------------------------
-    # 角度用 Python float，便于 Hydra 存储
-    roll = 0.0           # Roll in radians
-    pitch = 0.0          # Pitch in radians
-    yaw = 1.57           # Yaw in radians（或 math.pi / 2）
-
-    # 只在这里临时用 tensor 做计算，返回后立刻转成 tuple of float
-    pipe_quat = tuple(
-        quat_from_euler_xyz(
-            torch.tensor(roll),
-            torch.tensor(pitch),
-            torch.tensor(yaw),
-        ).tolist()
-    )
-
-    pipe_pos = (0.0, -0.29, -0.25)
-
-    pipe = AssetBaseCfg(
+    pipe_quat = quat_from_euler_xyz(roll,pitch,yaw)
+    pipe_pos = torch.tensor([0.0, -0.29, -0.25], device=torch.device('cuda'))
+    pipe  = AssetBaseCfg(
         prim_path="/World/envs/env_.*/pipe",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/pipe_stl.usd",
+            usd_path="/home/yhy/DVRK/ur3_scissor/pipe_stl.usd",
             scale=(0.5, 0.5, 0.08),
         ),
-        # 这里只存 Python 原生类型
-        init_state=AssetBaseCfg.InitialStateCfg(
-            pos=pipe_pos,
-            rot=(0.7071, 0.0, 0.0, 0.7071),
-        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, -0.29, -0.25),rot =  (0.7071, 0.0000,0.0, 0.7071)),
     )
 
-    # -------------------------
-    # Suture Needle object
-    # -------------------------
+        # Set Suture Needle as object
     object = RigidObjectCfg(
         prim_path="/World/envs/env_.*/object",
-        init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.0, -0.29, -0.2354),
-            rot=pipe_quat,   # tuple[float]，不会再是 tensor
-        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.29, -0.2354), rot=pipe_quat),
         spawn=UsdFileCfg(
-            usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/object1.usd",
+            usd_path=f"/home/yhy/DVRK/ur3_scissor/object1.usd",
+            # scale=(0.008, 0.015, 0.01),
             scale=(0.012, 0.02, 0.012),
             rigid_props=RigidBodyPropertiesCfg(
-                solver_position_iteration_count=32,
-                solver_velocity_iteration_count=8,
+                solver_position_iteration_count=128,
+                solver_velocity_iteration_count=128,
                 max_angular_velocity=200,
                 max_linear_velocity=200,
                 max_depenetration_velocity=1.0,
@@ -212,76 +193,71 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
             ),
         ),
     )
-
+    
     table_robot = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Table_R",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/Props/Table/table.usd",
+            usd_path=f"/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/Props/Table/table.usd",
             scale=(1, 0.5, 0.8),
         ),
-        init_state=AssetBaseCfg.InitialStateCfg(
-            pos=(0.0, -0.7, -0.53),
-            rot=(1.0, 0.0, 0.0, 0.0),
-        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, -0.7, -0.53), rot=(1, 0.0, 0.0, 0.0)),
     )
-
+    
     table_operate = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Table_O",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/Props/Table/Operating_table.usd",
+            usd_path=f"/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/Props/Table/Operating_table.usd",
             scale=(0.01, 0.01, 0.01),
         ),
-        init_state=AssetBaseCfg.InitialStateCfg(
-            pos=(-0.2, 0.0, -0.92),
-            rot=(0.35355, 0.35355, 0.6124, 0.6124),
-        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(-0.2, 0.0, -0.92), rot=(0.35355,0.35355,0.6124,0.6124)),
     )
-
+    
     room = AssetBaseCfg(
         prim_path="/World/envs/env_.*/room",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/OR_scene_s0253_ct_relabel_resample1_syn_seed6_postprocess/operating_room.usd",
+            usd_path=f"/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/OR_scene_s0253_ct_relabel_resample1_syn_seed6_postprocess/operating_room.usd",
             scale=(0.01, 0.01, 0.01),
         ),
-        init_state=AssetBaseCfg.InitialStateCfg(
-            pos=(0.0, 0.0, -0.9),
-            rot=(0.707, 0.707, 0.0, 0.0),
-        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -0.9), rot=(0.707, 0.707, 0.0, 0.0)),
     )
 
     # ground plane
     ground = AssetBaseCfg(
         prim_path="/World/GroundPlane",
-        spawn=sim_utils.GroundPlaneCfg(),
+        spawn=sim_utils.GroundPlaneCfg(usd_path=f"exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/default_environment.usd"),
         init_state=AssetBaseCfg.InitialStateCfg(
             pos=(0.0, 0.0, -0.9),
         ),
     )
 
-    # -------------------------
-    # 可视化配置：都还是普通 Python 类型
-    # -------------------------
-    goal_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
-        prim_path="/World/Visuals/Command/goal_pose"
-    )
+    
+    # 可视化部分
+    goal_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(prim_path="/World/Visuals/Command/goal_pose")
+
     current_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
         prim_path="/World/Visuals/Command/body_pose"
     )
 
-    goal_pose_visualizer_cfg.markers["frame"].scale = (0.01, 0.01, 0.01)
-    current_pose_visualizer_cfg.markers["frame"].scale = (0.01, 0.01, 0.01)
-
-    # -------------------------
-    # 指令输出范围：用 math.pi，避免 torch.pi 生成 tensor
-    # -------------------------
+    # Set the scale of the visualization markers to (0.1, 0.1, 0.1)
+    goal_pose_visualizer_cfg.markers["frame"].scale = (0.001, 0.001, 0.001)
+    current_pose_visualizer_cfg.markers["frame"].scale = (0.001, 0.001, 0.001)
+    
+    # 指令输出范围
+    # ranges = {
+    #     "object_r": (0.0, 0.004),
+    #     "object_theta": (0, 3.14),
+    #     "z_height": (0.0, -0.2),
+    #     "roll": (-torch.pi*0.75, -torch.pi*0.75),
+    #     "pitch": (0, 0),
+    #     "yaw": (-torch.pi*0.5, -torch.pi*0.5),
+    # }
     ranges = {
         "object_r": (0.002, 0.002),
         "object_theta": (1.73, 1.73),
         "z_height": (0.0, -0.2),
-        "roll": (-0.75 * math.pi, -0.75 * math.pi),
-        "pitch": (0.0, 0.0),
-        "yaw": (-0.5 * math.pi, -0.5 * math.pi),
+        "roll": (-torch.pi*0.75, -torch.pi*0.75),
+        "pitch": (0, 0),
+        "yaw": (-torch.pi*0.5, -torch.pi*0.5),
     }
-
     make_quat_unique = True
-    debug_vis = True
+    debug_vis = False
