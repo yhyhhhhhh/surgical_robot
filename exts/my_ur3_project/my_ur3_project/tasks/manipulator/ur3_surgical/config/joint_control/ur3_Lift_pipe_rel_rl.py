@@ -153,10 +153,6 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         self.prev_ee_to_obj_dist = torch.zeros(self.num_envs, device=self.device)
 
-
-        self.ee_id = self._robot.data.body_names.index("scissors_tip")
-        ## 构造 view，会自动处理所有环境实例中的 scissor_tip
-        self.ee_view = XFormPrimView(prim_paths_expr="/World/envs/env_*/Left_Robot/ur3_robot/Extension_Link/scissor_tip", reset_xform_properties=False)
     # ------------------------------------------------------------------
     # 场景搭建
     # ------------------------------------------------------------------
@@ -292,7 +288,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             actions[:, 3] → Δyaw  绕自身轴的旋转（末端局部 y 轴竖直）
             actions[:, 4] → 抓手速度因子（阻抗式控制）
         """
-        actions = torch.clamp(actions, -1.0, 1.0)
+        # actions = torch.clamp(actions, -1.0, 1.0)
         # DEBUG
         # actions = torch.clamp(actions, -0.0, 0.0)
 
@@ -372,7 +368,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 6) 抓手阻抗
         target = self.gripper_min + (actions[:, 4:5] + 1.0) * 0.5 * (self.gripper_max - self.gripper_min)
         self.gripper_cmd = target
-        
+
     # ------------------------------------------------------------------
     # 把 IK 输出写进关节目标
     # ------------------------------------------------------------------
@@ -407,7 +403,6 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return self.terminated, truncated
 
-
     def _get_rewards(self) -> torch.Tensor:
         """
         Alignment-first reward（截面对齐优先 + 轴向门控 + 夹爪门控 + 微量3D兜底）
@@ -425,7 +420,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         # ------------------- 末端 / 物体世界坐标 -------------------
         ee_pos_w = self._robot.data.body_pos_w[:, self.ee_id, 0:3]
-        ee_pos_w = self.ee_view.get_world_poses()[0]
+
         obj_pos_w = self.scene.rigid_objects["object"].data.body_pos_w[:, 0, :3]
 
         # 3D 距离（只做微量兜底 + 日志）
@@ -470,11 +465,11 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # ------------------- 4) 轻量 entry（避免纯对齐策略不愿进管） -------------------
         ee_to_pipe = torch.norm(ee_pos_w - self.pipe_top_pos, dim=1)
         entry_reward = torch.exp(-8.0 * torch.clamp(ee_to_pipe, 0.0, 0.2))
-        outside_penalty = -0.3 * torch.clamp(ee_to_pipe - 0.15, min=0.0) * outside_f
+        outside_penalty = -1 * torch.clamp(ee_to_pipe - 0.15, min=0.0) * outside_f
 
         # ------------------- 5) 截面对齐奖励：多尺度 + 进步量 -------------------
         # 多尺度阈值（截面内）
-        l1, l2, l3 = 0.010, 0.005, 0.002  # 1cm / 5mm / 2mm
+        l1, l2, l3 = 0.007, 0.003, 0.001  # 1cm / 5mm / 2mm
         lat_1 = 1.0 - torch.clamp(e_lat / l1, 0.0, 1.0)
         lat_2 = 1.0 - torch.clamp(e_lat / l2, 0.0, 1.0)
         lat_3 = 1.0 - torch.clamp(e_lat / l3, 0.0, 1.0)
@@ -489,7 +484,9 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         lat_improve = (self.prev_e_lat - e_lat).clamp(min=0.0)
         lat_progress = 800.0 * lat_improve  # 系数可调
-
+        lat_gate = (0.2 + 0.8 * in_pipe_f)
+        lat_shape = lat_shape * lat_gate
+        lat_progress = lat_progress * lat_gate
         self.prev_e_lat = e_lat.detach()
 
         # ------------------- 6) 轴向对齐奖励：被 g 门控 -------------------
@@ -525,25 +522,26 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         premature_ax_penalty = -2.0 * (1.0 - g) * torch.abs(delta_s)
 
         # ------------------- 8) 夹爪门控奖励（只作为行为引导） -------------------
-        # 夹爪归一化：0=闭合, 1=张开
+
+        # grip_norm: 0=闭, 1=开
         grip_norm = (self.gripper_cmd - self.gripper_min) / (self.gripper_max - self.gripper_min + 1e-6)
         grip_norm = torch.clamp(grip_norm, 0.0, 1.0).squeeze(-1)
 
-        # 用“轴向误差”定义开/闭时机（也可以把 e_lat 加进条件）
-        ax_open_low, ax_open_high = 0.004, 0.015  # 4mm~15mm：鼓励张开
-        ax_close_thr = 0.003                      # <3mm：鼓励闭合
-
-        open_mask = (e_ax >= ax_open_low) & (e_ax < ax_open_high)
+        ax_open_high = 0.015
+        ax_close_thr = 0.002
         close_mask = (e_ax < ax_close_thr)
+        # 连续目标：e_ax <= close_thr -> target=0
+        #           e_ax >= open_high -> target=1
+        # 中间线性过渡
+        target = torch.clamp((e_ax - ax_close_thr) / (ax_open_high - ax_close_thr + 1e-6), 0.2, 1.0)
+        base = 1.0 - torch.abs(grip_norm - target)
 
-        # 越接近 close_thr 之前张开越重要；越接近 0 时闭合越重要
-        t_open = torch.clamp((ax_open_high - e_ax) / (ax_open_high - ax_open_low + 1e-6), 0.0, 1.0)
-        t_close = torch.clamp((ax_close_thr - e_ax) / (ax_close_thr + 1e-6), 0.0, 1.0)
+        # 轻微错误惩罚（帮续训摆脱“张开惯性”）
+        wrong = close_mask.float() * grip_norm
 
-        gripper_open_reward = g * open_mask.float() * t_open * grip_norm
-        gripper_close_reward = g * close_mask.float() * t_close * (1.0 - grip_norm)
+        gripper_reward = 1.5*g * (base - 0.5 * wrong)
+        
 
-        gripper_reward = 0.3 * gripper_open_reward + 0.6 * gripper_close_reward
 
         # ------------------- 9) 管壁越界惩罚（保持安全） -------------------
         wall_violation = torch.clamp(r_e - self.pipe_radius, min=0.0)
@@ -553,7 +551,27 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 目的：防止分解误差下“看起来对齐了但 3D 还是差一点”的边角情况
         bonus_2mm = (ee_dist < 0.002).float()
         dist_fallback_bonus = 0.5 * bonus_2mm
+        # ====== 物体抬起量 ======
+        obj_z = obj_pos_w[:, 2] - self.scene.env_origins[:, 2]
+        init_z = self.scene.rigid_objects["object"].data.default_root_state[:, 2]
+        object_lift = torch.clamp(obj_z - init_z, min=0.0)
 
+        if not hasattr(self, "prev_object_lift"):
+            self.prev_object_lift = object_lift.detach()
+        first_step = (self.episode_length_buf == 0)
+        self.prev_object_lift = torch.where(first_step, object_lift, self.prev_object_lift)
+
+        lift_improve = (object_lift - self.prev_object_lift).clamp(min=0.0)
+        self.prev_object_lift = object_lift.detach()
+
+        # ====== 抬起奖励（只在 grasp_phase 生效） ======
+        lift_reward = (10000.0 * object_lift + 800.0 * lift_improve)
+
+        # ====== 成功条件 ======
+        lift_success_thr = 0.01  # 你按任务改
+        success = (object_lift > lift_success_thr)
+        success_reward = success.float() * 20.0
+        self.terminated = success
         # ------------------- 11) 总奖励 -------------------
         rewards = (
             # 轻量入管/靠近管口
@@ -578,7 +596,9 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             wall_penalty +
 
             # 微量 3D 精度兜底
-            dist_fallback_bonus
+            dist_fallback_bonus+
+            lift_reward+
+            1.0 * success_reward
         )
 
         # ------------------- 12) 日志 -------------------
@@ -594,8 +614,11 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             "reward/outside_pen":      outside_penalty.mean(),
             "reward/wall_pen":         wall_penalty.mean(),
             "reward/3d_fallback":      dist_fallback_bonus.mean(),
+            "reward/lift_reward":      lift_reward.mean(),
 
             "metrics/e_lat":           e_lat.mean(),
+            "metrics/lift":            object_lift.mean(),
+            "metrics/lift_h":          object_lift.max(),
             "metrics/e_ax":            e_ax.mean(),
             "metrics/ee_dist":         ee_dist.mean(),
             "metrics/g_gate":          g.mean(),
@@ -604,8 +627,6 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         }
 
         return rewards
-
-
 
     # ------------------------------------------------------------------
     # reset 环节
@@ -674,7 +695,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 末端世界系
         ee_state = self._robot.data.body_state_w[:, self.ee_id]
         # ee_pos_w = ee_state[:, 0:3]
-        ee_pos_w = self.ee_view.get_world_poses()[0]
+        ee_pos_w = self._robot.data.body_pos_w[:, self.ee_id, 0:3]
         # 物体世界系
         obj_state = self._object.data.body_state_w[:, 0]
         obj_pos_w = obj_state[:, 0:3]
@@ -783,6 +804,12 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
                 self.current_pose_visualizer = VisualizationMarkers(self.cfg.current_pose_visualizer_cfg)
             self.goal_pose_visualizer.set_visibility(True)
             self.current_pose_visualizer.set_visibility(True)
+            # === 新增：5mm 范围球 visualizer ===
+            if not hasattr(self, "range_visualizer"):
+                # 你在 cfg 里写的是 range_vis = VisualizationMarkersCfg(...)
+                self.range_visualizer = VisualizationMarkers(self.cfg.range_vis)
+            self.range_visualizer.set_visibility(True)
+
         else:
             if hasattr(self, "goal_pose_visualizer"):
                 self.goal_pose_visualizer.set_visibility(False)
@@ -812,6 +839,18 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         body_pose_w = self._robot.data.body_state_w[:, self.ee_id]
         self.current_pose_visualizer.visualize(body_pose_w[:, :3], body_pose_w[:, 3:7])
 
+        # === 新增：object 5mm 范围球 ===
+        if hasattr(self, "range_visualizer"):
+            # 取 object 的世界位姿
+            obj_state_w = self._object.data.body_state_w[:, 0]   # (num_envs, 13?) 取第0刚体
+            obj_pos_w = obj_state_w[:, 0:3]
+            obj_quat_w = obj_state_w[:, 3:7]
+
+            # 若你的 range_vis cfg 里只有一个 marker prototype（sphere）
+            # 强烈建议显式传 marker_indices
+            idx = torch.zeros((obj_pos_w.shape[0],), dtype=torch.int64, device=obj_pos_w.device)
+
+            self.range_visualizer.visualize(obj_pos_w, obj_quat_w, marker_indices=idx)
     # ------------------------------------------------------------------
     # 其它工具函数
     # ------------------------------------------------------------------
@@ -852,6 +891,3 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         d_axial = torch.sum(delta * self.u_axis, dim=1)
         return d_axial
 
-    def get_ee_world_pose(self):
-
-        return self.ee_view.get_world_poses()

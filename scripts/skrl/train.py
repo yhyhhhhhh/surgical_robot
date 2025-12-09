@@ -22,7 +22,7 @@ parser = argparse.ArgumentParser(description="Train an RL agent with skrl.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
-parser.add_argument("--num_envs", type=int, default=32, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=512, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default="My-Isaac-Ur3-PipeRel-Ik-RL-Direct-v0", help="Name of the task.")
 parser.add_argument("--seed", type=int, default=42, help="Seed used for the environment")
 parser.add_argument(
@@ -43,7 +43,12 @@ parser.add_argument(
     choices=["PPO", "IPPO", "MAPPO"],
     help="The RL algorithm used for training the skrl agent.",
 )
-
+parser.add_argument(
+    "--checkpoint",
+    type=str,
+    default="/home/yhy/DVRK/IsaacLabExtensionTemplate/logs/skrl/franka_cabinet_direct/2025-12-08_10-47-31_ppo_torch/checkpoints/agent_240000.pt",
+    help="Path to a skrl agent checkpoint to resume/continue training."
+)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -51,7 +56,7 @@ args_cli, hydra_args = parser.parse_known_args()
 args_cli.enable_cameras = False
 if args_cli.video:
     args_cli.enable_cameras = True
-# args_cli.headless=True
+args_cli.headless=True
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
 
@@ -175,6 +180,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # configure and instantiate the skrl runner
     # https://skrl.readthedocs.io/en/latest/api/utils/runner.html
     runner = Runner(env, agent_cfg)
+    # load checkpoint (if specified)
+    if args_cli.checkpoint:
+        print(f"[INFO] Loading model checkpoint from: {args_cli.checkpoint}")
+        runner.agent.load(args_cli.checkpoint)
 
     # run training
     runner.run()
