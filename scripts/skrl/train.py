@@ -22,8 +22,8 @@ parser = argparse.ArgumentParser(description="Train an RL agent with skrl.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
-parser.add_argument("--num_envs", type=int, default=512, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default="My-Isaac-Ur3-PipeRel-Ik-RL-Direct-v0", help="Name of the task.")
+parser.add_argument("--num_envs", type=int, default=64, help="Number of environments to simulate.")
+parser.add_argument("--task", type=str, default="My-Isaac-Ur3-PipeRelCam-Ik-RL-Direct-v0", help="Name of the task.")
 parser.add_argument("--seed", type=int, default=42, help="Seed used for the environment")
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
@@ -46,7 +46,7 @@ parser.add_argument(
 parser.add_argument(
     "--checkpoint",
     type=str,
-    default="/home/yhy/DVRK/IsaacLabExtensionTemplate/logs/skrl/franka_cabinet_direct/2025-12-08_10-47-31_ppo_torch/checkpoints/agent_240000.pt",
+    default=None,
     help="Path to a skrl agent checkpoint to resume/continue training."
 )
 # append AppLauncher cli args

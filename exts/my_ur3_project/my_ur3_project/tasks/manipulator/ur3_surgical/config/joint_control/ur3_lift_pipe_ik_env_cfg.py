@@ -114,7 +114,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
                     "shoulder_pan_joint","shoulder_lift_joint","elbow_joint",
                     "wrist_1_joint","wrist_2_joint","wrist_3_joint"
                 ],
-                velocity_limit=3.0,
+                velocity_limit=5.0,
                 effort_limit=100.0,          # ② 扭矩上限调高
                 stiffness=800.0,            # ③ KP/KD 更硬
                 damping=40,

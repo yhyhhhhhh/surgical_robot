@@ -381,25 +381,18 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
     # 终止条件（保留你原来的逻辑）
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        robot_ee_pos = self._robot.data.body_pos_w[:, self.ee_id, 0:3]
+        # === 用抬起高度作为唯一成功条件 ===
         obj_pos_w = self.scene.rigid_objects["object"].data.body_pos_w[:, 0, :3]
 
-        # 物体相对于鼻腔中心 (0,-0.29)
-        xy = obj_pos_w[:, :2] - self.scene.env_origins[:, :2]
-        target_xy = torch.tensor([0.0, -0.29], device=self.device).repeat(self.num_envs, 1)
-        dist_xy = torch.norm(xy - target_xy, dim=1)
+        obj_z = obj_pos_w[:, 2] - self.scene.env_origins[:, 2]
+        init_z = self.scene.rigid_objects["object"].data.default_root_state[:, 2]
+        object_lift = torch.clamp(obj_z - init_z, min=0.0)
 
-        # “移出鼻腔”条件
-        object_outside = dist_xy > 0.1
-        self.dist = dist_xy
+        lift_success_thr = 0.01  # 你和 reward 里保持一致
+        success = (object_lift > lift_success_thr)
 
-        # ee 与物体距离
-        self.ee_dist = torch.norm(robot_ee_pos - obj_pos_w, dim=1)
+        self.terminated = success
 
-        # 成功：物体出了管 & ee 和物体很近（说明是夹出来的）
-        self.terminated = torch.logical_and(object_outside, self.ee_dist < 0.01)
-
-        # 超时截断
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return self.terminated, truncated
 
@@ -565,7 +558,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         self.prev_object_lift = object_lift.detach()
 
         # ====== 抬起奖励（只在 grasp_phase 生效） ======
-        lift_reward = (10000.0 * object_lift + 800.0 * lift_improve)
+        lift_reward = (100.0 * object_lift + 800.0 * lift_improve)
 
         # ====== 成功条件 ======
         lift_success_thr = 0.01  # 你按任务改

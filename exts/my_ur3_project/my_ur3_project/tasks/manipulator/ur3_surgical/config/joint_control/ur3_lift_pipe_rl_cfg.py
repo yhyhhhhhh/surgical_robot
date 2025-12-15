@@ -25,6 +25,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     action_space = 5
 
     observation_space = 33
+    # observation_space = 29
     state_space = 0
 
     # simulation

@@ -24,8 +24,8 @@ parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default="My-Isaac-Ur3-PipeRel-Ik-RL-Direct-v0", help="Name of the task.")
-parser.add_argument("--checkpoint", type=str, default="/home/yhy/DVRK/IsaacLabExtensionTemplate/logs/skrl/franka_cabinet_direct/2025-12-08_10-47-31_ppo_torch/checkpoints/agent_240000.pt", help="Path to model checkpoint.")
+parser.add_argument("--task", type=str, default="My-Isaac-Ur3-Pick-Ik-RL-Direct-v0", help="Name of the task.")
+parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
 parser.add_argument(
     "--ml_framework",
     type=str,

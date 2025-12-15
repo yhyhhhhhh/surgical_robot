@@ -285,11 +285,11 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         self.actions = actions.clone()
         # 使用torch.where实现条件限制
-        # self.actions[:, 2] = torch.where(
-        #     self.actions[:, 2] < -0.235,
-        #     torch.full_like(self.actions[:, 2], -0.235),
-        #     self.actions[:, 2]
-        # )
+        self.actions[:, 2] = torch.where(
+            self.actions[:, 2] < -0.235,
+            torch.full_like(self.actions[:, 2], -0.235),
+            self.actions[:, 2]
+        )
 
         # 获取基座在世界坐标系中的位姿
         root_pos_w = self._robot.data.root_state_w[:, :3]  # (num_envs, 3)
