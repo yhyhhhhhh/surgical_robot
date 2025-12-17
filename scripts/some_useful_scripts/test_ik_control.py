@@ -45,12 +45,12 @@ def rpy_to_quaternion(roll, pitch, yaw):
 def main():
 
     env_cfg: Ur3LiftNeedleEnvCfg = parse_env_cfg(
-        "My-Isaac-Ur3-Ik-Abs-Position-Direct-v0",
+        "My-Isaac-Ur3-Pipe-Ik-Abs-Direct-v0",
         device=args_cli.device,
         num_envs=1,
     )
 
-    env = gym.make("My-Isaac-Ur3-Ik-Abs-Position-Direct-v0", cfg=env_cfg)
+    env = gym.make("My-Isaac-Ur3-Pipe-Ik-Abs-Direct-v0", cfg=env_cfg)
 
     env.reset()
     camera = env.scene["Camera"]
@@ -61,8 +61,10 @@ def main():
     while simulation_app.is_running():
 
         # actions = torch.tensor([[-0.0619, -0.1895, -0.1179]])
-        env.step(env.scene.rigid_objects["needle"].data.body_state_w[0,:,0:7])
-        # env.step(actions)
+        actions = env.env.action_go_pipe_mouth()
+
+        # env.step(env.scene.rigid_objects["needle"].data.body_state_w[0,:,0:7])
+        env.step(actions)
         ## 处理图像
         single_cam_data = convert_dict_to_backend(
             {k: v[camera_index] for k, v in camera.data.output.items()}, backend="numpy"

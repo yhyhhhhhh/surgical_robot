@@ -200,8 +200,8 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.left_robot)
 
         # 摄像头
-        self._camera = Camera(cfg=self.cfg.camera)
-        self.scene.sensors["Camera"] = self._camera
+        # self._camera = Camera(cfg=self.cfg.camera)
+        # self.scene.sensors["Camera"] = self._camera
 
         # 管道
         self.cfg.pipe.spawn.func(
@@ -360,12 +360,12 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         zeros = torch.zeros_like(self.ee_target_yaw)
         q_yaw = quat_from_euler_xyz(zeros, zeros, self.ee_target_yaw)  # (N,4)
 
-        q_align = self.q_align_y_to_z.to(self.device)
-        if q_align.ndim == 1:
-            q_align = q_align.unsqueeze(0)
-        q_align = q_align.expand(q_yaw.shape[0], -1)  # (N,4)
+        # q_align = self.q_align_y_to_z.to(self.device)
+        # if q_align.ndim == 1:
+        #     q_align = q_align.unsqueeze(0)
+        # q_align = q_align.expand(q_yaw.shape[0], -1)  # (N,4)
 
-        self.ee_target_quat_w = math_utils.quat_mul(q_yaw, q_align)
+        # self.ee_target_quat_w = math_utils.quat_mul(q_yaw, q_align)
         self.ee_target_quat_w = torch.nn.functional.normalize(self.ee_target_quat_w, dim=-1)
 
         # 5) world → base，交给 IK
@@ -409,227 +409,371 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return self.terminated, truncated
 
+    # def _get_rewards(self) -> torch.Tensor:
+    #     """
+    #     Alignment-first reward（截面对齐优先 + 轴向门控 + 夹爪门控 + 微量3D兜底）
+
+    #     目标行为：
+    #     1) 先在截面内对齐（横纵 / r-θ -> e_lat）
+    #     2) e_lat 足够小后，再沿轴向对齐/逼近（e_ax）
+    #     3) 在“对齐较好 + 轴向足够近”时，再引导夹爪闭合
+    #     4) 保证毫米级精度（重点 <2mm）
+
+    #     注意：
+    #     - 这是“阶段验证 + 行为规范化”的 reward
+    #     - 不是最终“抬出成功”的完整任务 reward
+    #     """
+
+    #     # ------------------- 末端 / 物体世界坐标 -------------------
+    #     ee_pos_w = self._robot.data.body_pos_w[:, self.ee_id, 0:3]
+
+    #     obj_pos_w = self.scene.rigid_objects["object"].data.body_pos_w[:, 0, :3]
+
+    #     # 3D 距离（只做微量兜底 + 日志）
+    #     ee_dist = torch.norm(ee_pos_w - obj_pos_w, dim=1)
+    #     self.ee_dist = ee_dist
+
+    #     # ------------------- 管道坐标 -------------------
+    #     s_e, r_e, th_e, _, _ = self._world_to_pipe_coords(ee_pos_w)
+    #     s_o, r_o, th_o, _, _ = self._world_to_pipe_coords(obj_pos_w)
+
+    #     s_e = s_e.squeeze(-1)
+    #     r_e = r_e.squeeze(-1)
+    #     th_e = th_e.squeeze(-1)
+
+    #     s_o = s_o.squeeze(-1)
+    #     r_o = r_o.squeeze(-1)
+    #     th_o = th_o.squeeze(-1)
+
+    #     # 是否在管内
+    #     is_in_pipe = (s_e > 0.0) & (r_e < self.pipe_radius)
+    #     in_pipe_f = is_in_pipe.float()
+    #     outside_f = (~is_in_pipe).float()
+
+    #     # ------------------- 1) 计算“截面误差 e_lat” -------------------
+    #     # 在截面平面内把 (r,theta) 转成 (x,y)
+    #     x_e = r_e * torch.cos(th_e)
+    #     y_e = r_e * torch.sin(th_e)
+    #     x_o = r_o * torch.cos(th_o)
+    #     y_o = r_o * torch.sin(th_o)
+
+    #     e_lat = torch.sqrt((x_e - x_o) ** 2 + (y_e - y_o) ** 2 + 1e-8)
+
+    #     # ------------------- 2) 计算“轴向误差 e_ax” -------------------
+    #     e_ax = torch.abs(s_e - s_o)
+
+    #     # ------------------- 3) 截面 -> 轴向 的平滑门控 g(e_lat) -------------------
+    #     # e_lat 小于 ~3mm 时，轴向奖励逐渐“变得很值钱”
+    #     e_lat_thr = 0.003    # 3mm：你可以以后调到 0.0025 或 0.004
+    #     k_gate = 0.0008      # 平滑带宽
+    #     g = torch.sigmoid((e_lat_thr - e_lat) / (k_gate + 1e-8))  # (N,)
+
+    #     # ------------------- 4) 轻量 entry（避免纯对齐策略不愿进管） -------------------
+    #     ee_to_pipe = torch.norm(ee_pos_w - self.pipe_top_pos, dim=1)
+    #     entry_reward = torch.exp(-8.0 * torch.clamp(ee_to_pipe, 0.0, 0.2))
+    #     outside_penalty = -1 * torch.clamp(ee_to_pipe - 0.15, min=0.0) * outside_f
+
+    #     # ------------------- 5) 截面对齐奖励：多尺度 + 进步量 -------------------
+    #     # 多尺度阈值（截面内）
+    #     l1, l2, l3 = 0.007, 0.003, 0.001  # 1cm / 5mm / 2mm
+    #     lat_1 = 1.0 - torch.clamp(e_lat / l1, 0.0, 1.0)
+    #     lat_2 = 1.0 - torch.clamp(e_lat / l2, 0.0, 1.0)
+    #     lat_3 = 1.0 - torch.clamp(e_lat / l3, 0.0, 1.0)
+
+    #     lat_shape = 0.2 * lat_1 + 0.6 * lat_2 + 1.4 * lat_3  # 2mm 层权重大
+
+    #     # 进步量（防站桩）
+    #     if not hasattr(self, "prev_e_lat"):
+    #         self.prev_e_lat = e_lat.detach()
+    #     first_step = (self.episode_length_buf == 0)
+    #     self.prev_e_lat = torch.where(first_step, e_lat, self.prev_e_lat)
+
+    #     lat_improve = (self.prev_e_lat - e_lat).clamp(min=0.0)
+    #     lat_progress = 800.0 * lat_improve  # 系数可调
+    #     lat_gate = (0.2 + 0.8 * in_pipe_f)
+    #     lat_shape = lat_shape * lat_gate
+    #     lat_progress = lat_progress * lat_gate
+    #     self.prev_e_lat = e_lat.detach()
+
+    #     # ------------------- 6) 轴向对齐奖励：被 g 门控 -------------------
+    #     a1, a2, a3 = 0.020, 0.007, 0.002  # 2cm / 7mm / 2mm
+    #     ax_1 = 1.0 - torch.clamp(e_ax / a1, 0.0, 1.0)
+    #     ax_2 = 1.0 - torch.clamp(e_ax / a2, 0.0, 1.0)
+    #     ax_3 = 1.0 - torch.clamp(e_ax / a3, 0.0, 1.0)
+
+    #     ax_shape_raw = 0.2 * ax_1 + 0.6 * ax_2 + 1.4 * ax_3
+
+    #     if not hasattr(self, "prev_e_ax"):
+    #         self.prev_e_ax = e_ax.detach()
+    #     self.prev_e_ax = torch.where(first_step, e_ax, self.prev_e_ax)
+
+    #     ax_improve = (self.prev_e_ax - e_ax).clamp(min=0.0)
+    #     ax_progress_raw = 800.0 * ax_improve
+
+    #     self.prev_e_ax = e_ax.detach()
+
+    #     # 门控 + 管内加权
+    #     ax_shape = g * ax_shape_raw * (0.3 + 0.7 * in_pipe_f)
+    #     ax_progress = g * ax_progress_raw * (0.3 + 0.7 * in_pipe_f)
+
+    #     # ------------------- 7) “过早轴向推进”轻惩罚（实现你想要的顺序） -------------------
+    #     # 用 s_e 的变化估计“这一帧是不是在猛推轴向”
+    #     if not hasattr(self, "prev_s_e"):
+    #         self.prev_s_e = s_e.detach()
+    #     self.prev_s_e = torch.where(first_step, s_e, self.prev_s_e)
+
+    #     delta_s = (s_e - self.prev_s_e)
+    #     self.prev_s_e = s_e.detach()
+
+    #     premature_ax_penalty = -2.0 * (1.0 - g) * torch.abs(delta_s)
+
+    #     # ------------------- 8) 夹爪门控奖励（只作为行为引导） -------------------
+
+    #     # grip_norm: 0=闭, 1=开
+    #     grip_norm = (self.gripper_cmd - self.gripper_min) / (self.gripper_max - self.gripper_min + 1e-6)
+    #     grip_norm = torch.clamp(grip_norm, 0.0, 1.0).squeeze(-1)
+
+    #     ax_open_high = 0.015
+    #     ax_close_thr = 0.002
+    #     close_mask = (e_ax < ax_close_thr)
+    #     # 连续目标：e_ax <= close_thr -> target=0
+    #     #           e_ax >= open_high -> target=1
+    #     # 中间线性过渡
+    #     target = torch.clamp((e_ax - ax_close_thr) / (ax_open_high - ax_close_thr + 1e-6), 0.2, 1.0)
+    #     base = 1.0 - torch.abs(grip_norm - target)
+
+    #     # 轻微错误惩罚（帮续训摆脱“张开惯性”）
+    #     wrong = close_mask.float() * grip_norm
+
+    #     gripper_reward = 1.5*g * (base - 0.5 * wrong)
+        
+
+
+    #     # ------------------- 9) 管壁越界惩罚（保持安全） -------------------
+    #     wall_violation = torch.clamp(r_e - self.pipe_radius, min=0.0)
+    #     wall_penalty = -5.0 * wall_violation
+
+    #     # ------------------- 10) 微量 3D 精度兜底（只保留里程碑） -------------------
+    #     # 目的：防止分解误差下“看起来对齐了但 3D 还是差一点”的边角情况
+    #     bonus_2mm = (ee_dist < 0.002).float()
+    #     dist_fallback_bonus = 0.5 * bonus_2mm
+    #     # ====== 物体抬起量 ======
+    #     obj_z = obj_pos_w[:, 2] - self.scene.env_origins[:, 2]
+    #     init_z = self.scene.rigid_objects["object"].data.default_root_state[:, 2]
+    #     object_lift = torch.clamp(obj_z - init_z, min=0.0)
+
+    #     if not hasattr(self, "prev_object_lift"):
+    #         self.prev_object_lift = object_lift.detach()
+    #     first_step = (self.episode_length_buf == 0)
+    #     self.prev_object_lift = torch.where(first_step, object_lift, self.prev_object_lift)
+
+    #     lift_improve = (object_lift - self.prev_object_lift).clamp(min=0.0)
+    #     self.prev_object_lift = object_lift.detach()
+
+    #     # ====== 抬起奖励（只在 grasp_phase 生效） ======
+    #     lift_reward = (100.0 * object_lift + 800.0 * lift_improve)
+
+    #     # ====== 成功条件 ======
+    #     lift_success_thr = 0.01  # 你按任务改
+    #     success = (object_lift > lift_success_thr)
+    #     success_reward = success.float() * 20.0
+    #     self.terminated = success
+    #     # ------------------- 11) 总奖励 -------------------
+    #     rewards = (
+    #         # 轻量入管/靠近管口
+    #         0.15 * entry_reward +
+
+    #         # 截面对齐是主菜
+    #         3.0 * lat_shape +
+    #         1.0 * lat_progress +
+
+    #         # 轴向在截面对齐好时变得很值钱
+    #         2.5 * ax_shape +
+    #         1.0 * ax_progress +
+
+    #         # 夹爪行为引导
+    #         1.0 * gripper_reward +
+
+    #         # 顺序约束
+    #         premature_ax_penalty +
+
+    #         # 小惩罚
+    #         outside_penalty +
+    #         wall_penalty +
+
+    #         # 微量 3D 精度兜底
+    #         dist_fallback_bonus+
+    #         lift_reward+
+    #         1.0 * success_reward
+    #     )
+
+    #     # ------------------- 12) 日志 -------------------
+    #     self.extras["log"] = {
+    #         "reward/total":            rewards.mean(),
+    #         "reward/entry":            (0.15 * entry_reward).mean(),
+    #         "reward/lat_shape":        (3.0 * lat_shape).mean(),
+    #         "reward/lat_progress":     lat_progress.mean(),
+    #         "reward/ax_shape":         (2.5 * ax_shape).mean(),
+    #         "reward/ax_progress":      ax_progress.mean(),
+    #         "reward/gripper":          gripper_reward.mean(),
+    #         "reward/premature_ax":     premature_ax_penalty.mean(),
+    #         "reward/outside_pen":      outside_penalty.mean(),
+    #         "reward/wall_pen":         wall_penalty.mean(),
+    #         "reward/3d_fallback":      dist_fallback_bonus.mean(),
+    #         "reward/lift_reward":      lift_reward.mean(),
+
+    #         "metrics/e_lat":           e_lat.mean(),
+    #         "metrics/lift":            object_lift.mean(),
+    #         "metrics/lift_h":          object_lift.max(),
+    #         "metrics/e_ax":            e_ax.mean(),
+    #         "metrics/ee_dist":         ee_dist.mean(),
+    #         "metrics/g_gate":          g.mean(),
+    #         "metrics/in_pipe_ratio":   in_pipe_f.mean(),
+    #         "metrics/bonus_2mm_rate":  bonus_2mm.mean(),
+    #     }
+
+    #     return rewards
     def _get_rewards(self) -> torch.Tensor:
-        """
-        Alignment-first reward（截面对齐优先 + 轴向门控 + 夹爪门控 + 微量3D兜底）
-
-        目标行为：
-        1) 先在截面内对齐（横纵 / r-θ -> e_lat）
-        2) e_lat 足够小后，再沿轴向对齐/逼近（e_ax）
-        3) 在“对齐较好 + 轴向足够近”时，再引导夹爪闭合
-        4) 保证毫米级精度（重点 <2mm）
-
-        注意：
-        - 这是“阶段验证 + 行为规范化”的 reward
-        - 不是最终“抬出成功”的完整任务 reward
-        """
-
         # ------------------- 末端 / 物体世界坐标 -------------------
         ee_pos_w = self._robot.data.body_pos_w[:, self.ee_id, 0:3]
-
         obj_pos_w = self.scene.rigid_objects["object"].data.body_pos_w[:, 0, :3]
 
-        # 3D 距离（只做微量兜底 + 日志）
-        ee_dist = torch.norm(ee_pos_w - obj_pos_w, dim=1)
+        ee_dist = torch.norm(ee_pos_w - obj_pos_w, dim=1)  # 3D 距离（兜底用）
         self.ee_dist = ee_dist
 
         # ------------------- 管道坐标 -------------------
         s_e, r_e, th_e, _, _ = self._world_to_pipe_coords(ee_pos_w)
         s_o, r_o, th_o, _, _ = self._world_to_pipe_coords(obj_pos_w)
+        s_e = s_e.squeeze(-1); r_e = r_e.squeeze(-1); th_e = th_e.squeeze(-1)
+        s_o = s_o.squeeze(-1); r_o = r_o.squeeze(-1); th_o = th_o.squeeze(-1)
 
-        s_e = s_e.squeeze(-1)
-        r_e = r_e.squeeze(-1)
-        th_e = th_e.squeeze(-1)
-
-        s_o = s_o.squeeze(-1)
-        r_o = r_o.squeeze(-1)
-        th_o = th_o.squeeze(-1)
-
-        # 是否在管内
-        is_in_pipe = (s_e > 0.0) & (r_e < self.pipe_radius)
-        in_pipe_f = is_in_pipe.float()
-        outside_f = (~is_in_pipe).float()
-
-        # ------------------- 1) 计算“截面误差 e_lat” -------------------
-        # 在截面平面内把 (r,theta) 转成 (x,y)
+        # ------------------- 截面误差 e_lat（在截面里算 xy） -------------------
         x_e = r_e * torch.cos(th_e)
         y_e = r_e * torch.sin(th_e)
         x_o = r_o * torch.cos(th_o)
         y_o = r_o * torch.sin(th_o)
-
         e_lat = torch.sqrt((x_e - x_o) ** 2 + (y_e - y_o) ** 2 + 1e-8)
 
-        # ------------------- 2) 计算“轴向误差 e_ax” -------------------
+        # ------------------- 轴向误差 e_ax -------------------
         e_ax = torch.abs(s_e - s_o)
 
-        # ------------------- 3) 截面 -> 轴向 的平滑门控 g(e_lat) -------------------
-        # e_lat 小于 ~3mm 时，轴向奖励逐渐“变得很值钱”
-        e_lat_thr = 0.003    # 3mm：你可以以后调到 0.0025 或 0.004
-        k_gate = 0.0008      # 平滑带宽
-        g = torch.sigmoid((e_lat_thr - e_lat) / (k_gate + 1e-8))  # (N,)
+        # ------------------- 1) 顺序门控：截面对齐好，轴向才“值钱” -------------------
+        # 3mm 左右开始打开轴向奖励（可调）
+        g_lat = torch.sigmoid((0.0015 - e_lat) / (0.0007 + 1e-8))  # in (0,1)
 
-        # ------------------- 4) 轻量 entry（避免纯对齐策略不愿进管） -------------------
-        ee_to_pipe = torch.norm(ee_pos_w - self.pipe_top_pos, dim=1)
-        entry_reward = torch.exp(-8.0 * torch.clamp(ee_to_pipe, 0.0, 0.2))
-        outside_penalty = -1 * torch.clamp(ee_to_pipe - 0.15, min=0.0) * outside_f
+        # ------------------- 2) 绝对型对齐奖励（多尺度，高精度更重） -------------------
+        # 截面：粗(4mm) + 细(1.5mm)
+        r_lat = torch.exp(- (e_lat / 0.004) ** 2)
+        r_lat_fine = torch.exp(- (e_lat / 0.0015) ** 2)
 
-        # ------------------- 5) 截面对齐奖励：多尺度 + 进步量 -------------------
-        # 多尺度阈值（截面内）
-        l1, l2, l3 = 0.007, 0.003, 0.001  # 1cm / 5mm / 2mm
-        lat_1 = 1.0 - torch.clamp(e_lat / l1, 0.0, 1.0)
-        lat_2 = 1.0 - torch.clamp(e_lat / l2, 0.0, 1.0)
-        lat_3 = 1.0 - torch.clamp(e_lat / l3, 0.0, 1.0)
+        # 轴向：粗(10mm) + 细(3mm)，并乘门控 g_lat
+        r_ax = torch.exp(- (e_ax / 0.010) ** 2)
+        r_ax_fine = torch.exp(- (e_ax / 0.003) ** 2)
+        r_ax_all = g_lat * (0.6 * r_ax + 0.4 * r_ax_fine)
 
-        lat_shape = 0.2 * lat_1 + 0.6 * lat_2 + 1.4 * lat_3  # 2mm 层权重大
+        # 合并：截面主导，轴向次之（可调权重）
+        align_reward = 1.6 * (0.6 * r_lat + 0.4 * r_lat_fine) + 1.0 * r_ax_all
 
-        # 进步量（防站桩）
-        if not hasattr(self, "prev_e_lat"):
-            self.prev_e_lat = e_lat.detach()
-        first_step = (self.episode_length_buf == 0)
-        self.prev_e_lat = torch.where(first_step, e_lat, self.prev_e_lat)
+        # 3D 兜底：防止分解误差边角（权重小）
+        dist_reward = 0.25 * torch.exp(- (ee_dist / 0.006) ** 2)
 
-        lat_improve = (self.prev_e_lat - e_lat).clamp(min=0.0)
-        lat_progress = 800.0 * lat_improve  # 系数可调
-        lat_gate = (0.2 + 0.8 * in_pipe_f)
-        lat_shape = lat_shape * lat_gate
-        lat_progress = lat_progress * lat_gate
-        self.prev_e_lat = e_lat.detach()
+        # ------------------- 2.5) yaw 对齐奖励（绕 world z 轴） -------------------
+        # 取末端/物体世界四元数 (w,x,y,z)
+        ee_quat_w = self._robot.data.body_state_w[:, self.ee_id, 3:7]
+        obj_quat_w = self.scene.rigid_objects["object"].data.body_state_w[:, 0, 3:7]
 
-        # ------------------- 6) 轴向对齐奖励：被 g 门控 -------------------
-        a1, a2, a3 = 0.020, 0.007, 0.002  # 2cm / 7mm / 2mm
-        ax_1 = 1.0 - torch.clamp(e_ax / a1, 0.0, 1.0)
-        ax_2 = 1.0 - torch.clamp(e_ax / a2, 0.0, 1.0)
-        ax_3 = 1.0 - torch.clamp(e_ax / a3, 0.0, 1.0)
+        # 从 quat 提取 yaw（Z 轴旋转），采用常用 ZYX yaw 公式
+        def quat_to_yaw(q):
+            w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+            siny_cosp = 2.0 * (w * z + x * y)
+            cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+            return torch.atan2(siny_cosp, cosy_cosp)
 
-        ax_shape_raw = 0.2 * ax_1 + 0.6 * ax_2 + 1.4 * ax_3
+        yaw_ee = quat_to_yaw(ee_quat_w)
+        yaw_obj = quat_to_yaw(obj_quat_w)
 
-        if not hasattr(self, "prev_e_ax"):
-            self.prev_e_ax = e_ax.detach()
-        self.prev_e_ax = torch.where(first_step, e_ax, self.prev_e_ax)
+        # wrap 到 [-pi, pi]
+        dyaw = yaw_ee - yaw_obj
+        dyaw = torch.atan2(torch.sin(dyaw), torch.cos(dyaw))
+        dyaw_abs = torch.abs(dyaw)
 
-        ax_improve = (self.prev_e_ax - e_ax).clamp(min=0.0)
-        ax_progress_raw = 800.0 * ax_improve
+        # 只在“已经很接近”时才奖励 yaw（避免远处刷姿态）
+        # 你可以用 g_close 或者单独门控，这里用单独门控更直观
+        g_yaw = torch.sigmoid((0.003 - e_lat) / (0.0005 + 1e-8)) * torch.sigmoid((0.004 - e_ax) / (0.0015 + 1e-8))
 
-        self.prev_e_ax = e_ax.detach()
+        # 多尺度 yaw shaping（粗对齐 + 精对齐）
+        r_yaw = 0.6 * torch.exp(- (dyaw_abs / 0.35) ** 2) + 0.4 * torch.exp(- (dyaw_abs / 0.12) ** 2)
 
-        # 门控 + 管内加权
-        ax_shape = g * ax_shape_raw * (0.3 + 0.7 * in_pipe_f)
-        ax_progress = g * ax_progress_raw * (0.3 + 0.7 * in_pipe_f)
+        yaw_reward = 0.4 * g_yaw * r_yaw
 
-        # ------------------- 7) “过早轴向推进”轻惩罚（实现你想要的顺序） -------------------
-        # 用 s_e 的变化估计“这一帧是不是在猛推轴向”
-        if not hasattr(self, "prev_s_e"):
-            self.prev_s_e = s_e.detach()
-        self.prev_s_e = torch.where(first_step, s_e, self.prev_s_e)
-
-        delta_s = (s_e - self.prev_s_e)
-        self.prev_s_e = s_e.detach()
-
-        premature_ax_penalty = -2.0 * (1.0 - g) * torch.abs(delta_s)
-
-        # ------------------- 8) 夹爪门控奖励（只作为行为引导） -------------------
-
+        # ------------------- 3) 夹爪“跟随目标”奖励（绝对型） -------------------
         # grip_norm: 0=闭, 1=开
         grip_norm = (self.gripper_cmd - self.gripper_min) / (self.gripper_max - self.gripper_min + 1e-6)
         grip_norm = torch.clamp(grip_norm, 0.0, 1.0).squeeze(-1)
 
-        ax_open_high = 0.015
-        ax_close_thr = 0.002
-        close_mask = (e_ax < ax_close_thr)
-        # 连续目标：e_ax <= close_thr -> target=0
-        #           e_ax >= open_high -> target=1
-        # 中间线性过渡
-        target = torch.clamp((e_ax - ax_close_thr) / (ax_open_high - ax_close_thr + 1e-6), 0.2, 1.0)
-        base = 1.0 - torch.abs(grip_norm - target)
+        # 当 (e_lat<~1.8mm 且 e_ax<~3mm) 时，开始希望闭合
+        g_close = torch.sigmoid((0.0018 - e_lat) / (0.0005 + 1e-8)) * torch.sigmoid((0.003 - e_ax) / (0.001 + 1e-8))
+        target_grip = 1.0 - g_close  # 远 -> 1(开), 近 -> 0(闭)
 
-        # 轻微错误惩罚（帮续训摆脱“张开惯性”）
-        wrong = close_mask.float() * grip_norm
+        # “跟随目标”的绝对奖励：1 - |grip - target|  (范围[0,1])
+        gripper_reward = 0.6 * (1.0 - torch.abs(grip_norm - target_grip))
 
-        gripper_reward = 1.5*g * (base - 0.5 * wrong)
-        
+        # ------------------- 4) 安全约束：越管壁/跑出管长 -------------------
+        # 径向越界：平方惩罚更强、且平滑
+        wall_violation = torch.relu(r_e - (self.pipe_radius - self.pipe_safety_margin))
+        wall_penalty = -10.0 * (wall_violation ** 2)
 
+        # 轴向越界：如果你希望“必须留在管内”，这里给明显惩罚
+        # （起点已在管内，这项主要防 retreat 或冲出长度）
+        out_ax = torch.relu(-s_e) + torch.relu(s_e - (self.pipe_length - self.pipe_safety_margin))
+        out_penalty = -3.0 * out_ax
 
-        # ------------------- 9) 管壁越界惩罚（保持安全） -------------------
-        wall_violation = torch.clamp(r_e - self.pipe_radius, min=0.0)
-        wall_penalty = -5.0 * wall_violation
-
-        # ------------------- 10) 微量 3D 精度兜底（只保留里程碑） -------------------
-        # 目的：防止分解误差下“看起来对齐了但 3D 还是差一点”的边角情况
-        bonus_2mm = (ee_dist < 0.002).float()
-        dist_fallback_bonus = 0.5 * bonus_2mm
-        # ====== 物体抬起量 ======
+        # ------------------- 5) 抬起/成功（绝对型） -------------------
         obj_z = obj_pos_w[:, 2] - self.scene.env_origins[:, 2]
         init_z = self.scene.rigid_objects["object"].data.default_root_state[:, 2]
         object_lift = torch.clamp(obj_z - init_z, min=0.0)
 
-        if not hasattr(self, "prev_object_lift"):
-            self.prev_object_lift = object_lift.detach()
-        first_step = (self.episode_length_buf == 0)
-        self.prev_object_lift = torch.where(first_step, object_lift, self.prev_object_lift)
+        lift_success_thr = 0.01
+        lift_reward = 3.0 * torch.clamp(object_lift / lift_success_thr, 0.0, 1.0)
 
-        lift_improve = (object_lift - self.prev_object_lift).clamp(min=0.0)
-        self.prev_object_lift = object_lift.detach()
-
-        # ====== 抬起奖励（只在 grasp_phase 生效） ======
-        lift_reward = (100.0 * object_lift + 800.0 * lift_improve)
-
-        # ====== 成功条件 ======
-        lift_success_thr = 0.01  # 你按任务改
         success = (object_lift > lift_success_thr)
-        success_reward = success.float() * 20.0
         self.terminated = success
-        # ------------------- 11) 总奖励 -------------------
+        success_reward = 8.0 * success.float()
+
+        # ------------------- 6) 轻微每步成本：防止“站桩拿小奖励” -------------------
+        step_penalty = -0.01
+
         rewards = (
-            # 轻量入管/靠近管口
-            0.15 * entry_reward +
-
-            # 截面对齐是主菜
-            3.0 * lat_shape +
-            1.0 * lat_progress +
-
-            # 轴向在截面对齐好时变得很值钱
-            2.5 * ax_shape +
-            1.0 * ax_progress +
-
-            # 夹爪行为引导
-            1.0 * gripper_reward +
-
-            # 顺序约束
-            premature_ax_penalty +
-
-            # 小惩罚
-            outside_penalty +
+            align_reward +
+            dist_reward +
+            gripper_reward +
             wall_penalty +
-
-            # 微量 3D 精度兜底
-            dist_fallback_bonus+
-            lift_reward+
-            1.0 * success_reward
+            out_penalty +
+            lift_reward +
+            success_reward +
+            yaw_reward +
+            step_penalty
         )
 
-        # ------------------- 12) 日志 -------------------
+        # ------------------- 日志 -------------------
         self.extras["log"] = {
-            "reward/total":            rewards.mean(),
-            "reward/entry":            (0.15 * entry_reward).mean(),
-            "reward/lat_shape":        (3.0 * lat_shape).mean(),
-            "reward/lat_progress":     lat_progress.mean(),
-            "reward/ax_shape":         (2.5 * ax_shape).mean(),
-            "reward/ax_progress":      ax_progress.mean(),
-            "reward/gripper":          gripper_reward.mean(),
-            "reward/premature_ax":     premature_ax_penalty.mean(),
-            "reward/outside_pen":      outside_penalty.mean(),
-            "reward/wall_pen":         wall_penalty.mean(),
-            "reward/3d_fallback":      dist_fallback_bonus.mean(),
-            "reward/lift_reward":      lift_reward.mean(),
-
-            "metrics/e_lat":           e_lat.mean(),
-            "metrics/lift":            object_lift.mean(),
-            "metrics/lift_h":          object_lift.max(),
-            "metrics/e_ax":            e_ax.mean(),
-            "metrics/ee_dist":         ee_dist.mean(),
-            "metrics/g_gate":          g.mean(),
-            "metrics/in_pipe_ratio":   in_pipe_f.mean(),
-            "metrics/bonus_2mm_rate":  bonus_2mm.mean(),
+            "reward/total": rewards.mean(),
+            "reward/align": align_reward.mean(),
+            "reward/dist": dist_reward.mean(),
+            "reward/gripper": gripper_reward.mean(),
+            "reward/wall_pen": wall_penalty.mean(),
+            "reward/out_pen": out_penalty.mean(),
+            "reward/lift": lift_reward.mean(),
+            "reward/success": success_reward.mean(),
+            "metrics/e_lat": e_lat.mean(),
+            "metrics/e_ax": e_ax.mean(),
+            "metrics/ee_dist": ee_dist.mean(),
+            "metrics/g_lat": g_lat.mean(),
+            "metrics/g_close": g_close.mean(),
+            "metrics/lift": object_lift.mean(),
+            "reward/yaw": yaw_reward.mean(),
+            "metrics/dyaw_abs": dyaw_abs.mean(),
+            "metrics/g_yaw": g_yaw.mean(),
         }
 
         return rewards
@@ -800,8 +944,8 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         state = torch.clamp(obs, -5.0, 5.0).to(torch.float32)
 
-        rgb = self.get_image_observation(data_type="rgb")[..., :3]  # [N,H,W,3]
-        image = rgb.to(torch.uint8)
+        # rgb = self.get_image_observation(data_type="rgb")[..., :3]  # [N,H,W,3]
+        
 
         # reset 后 episode_length_buf 会变成 0，所以这里能得到 is_first
         is_first = (self.episode_length_buf == 0).to(torch.int32)
@@ -809,7 +953,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         return {
             "policy": state,
-            "image": image,
+            # "image": rgb,
             "is_first": is_first,     # ✅ 可靠
             "is_last": zeros,         # 先占位（真正 last 在 step() 里做）
             "is_terminal": zeros,     # 先占位
@@ -838,6 +982,9 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
                 images[images == float("inf")] = 0
 
         return images.clone()
+
+
+    
     # ------------------------------------------------------------------
     # debug 可视化
     # ------------------------------------------------------------------
@@ -879,7 +1026,8 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         if not self._robot.is_initialized:
             return
         pose, quat = self.get_pipe_top_pose()
-        self.goal_pose_visualizer.visualize(self.ee_target_pos_w, self.ee_target_quat_w)
+        object_pose_w = self._object.data.body_state_w[:, 0]
+        self.goal_pose_visualizer.visualize(object_pose_w[:, :3], object_pose_w[:, 3:7])
         body_pose_w = self._robot.data.body_state_w[:, self.ee_id]
         self.current_pose_visualizer.visualize(body_pose_w[:, :3], body_pose_w[:, 3:7])
 
@@ -894,7 +1042,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             # 强烈建议显式传 marker_indices
             idx = torch.zeros((obj_pos_w.shape[0],), dtype=torch.int64, device=obj_pos_w.device)
 
-            self.range_visualizer.visualize(obj_pos_w, obj_quat_w, marker_indices=idx)
+            # self.range_visualizer.visualize(obj_pos_w, obj_quat_w, marker_indices=idx)
     # ------------------------------------------------------------------
     # 其它工具函数
     # ------------------------------------------------------------------

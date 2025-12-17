@@ -53,7 +53,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Left_Robot",
         spawn=sim_utils.UsdFileCfg(
             # usd_path=f"/home/yhy/DVRK/ur3_scissor/ur3TipCam_pro1_1.usd",
-            usd_path=f"/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/ur3TipCam_pro1_1_v0_nocam.usd",
+            usd_path=f"/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/ur3TipCam_pro1_1_v0.usd",
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -65,13 +65,13 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             joint_pos={
-                "shoulder_pan_joint": -1.6665,
-                "shoulder_lift_joint": 0.8053,
-                "elbow_joint": 0.3794,
-                "wrist_1_joint": 1.9702,
-                "wrist_2_joint": -0.1016,
-                "wrist_3_joint": -1.5677,
-                "tip_joint":-0.2500,
+                "shoulder_pan_joint": -1.7139,
+                "shoulder_lift_joint": 0.6371,
+                "elbow_joint": 1.2418,
+                "wrist_1_joint": 1.2720,
+                "wrist_2_joint": -0.1490,
+                "wrist_3_joint": -1.5632,
+                "tip_joint":-0.1000,
             },
             # joint_pos={
             #             "shoulder_pan_joint": -1.5169,
@@ -161,14 +161,15 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     #     spawn=None,
     # )
     camera = TiledCameraCfg(
-            prim_path="/World/envs/env_.*/Left_Robot/ur3_robot/camera_link/Camera_new",
+            prim_path="/World/envs/env_.*/Left_Robot/ur3_robot/camera_link/Camera",
             update_period=0.01,
             height=128,
             width=128,
             data_types=["rgb"],
-            spawn=PinholeCameraCfg(
-                focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 20)
-            ),
+            # spawn=PinholeCameraCfg(
+            #     focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 20)
+            # ),
+            spawn=None,
             offset=TiledCameraCfg.OffsetCfg(convention="opengl"),
         )
 
@@ -215,7 +216,8 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
         ),
         spawn=UsdFileCfg(
             usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/object1.usd",
-            scale=(0.012, 0.02, 0.012),
+            # scale=(0.012, 0.02, 0.012),
+            scale=(0.01, 0.018, 0.01),
             rigid_props=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=32,
                 solver_velocity_iteration_count=8,

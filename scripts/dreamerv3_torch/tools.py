@@ -75,138 +75,138 @@ import wandb
 
 
 class Logger:
-    def __init__(self, logdir, step):
-        self._logdir = logdir
-        self._last_step = None
-        self._last_time = None
-        self._scalars = {}
-        self._images = {}
-        self._videos = {}
-        self.step = step
+	def __init__(self, logdir, step):
+		self._logdir = logdir
+		self._last_step = None
+		self._last_time = None
+		self._scalars = {}
+		self._images = {}
+		self._videos = {}
+		self.step = step
 
-        name = str(logdir).split("/")[-2] + "_" + str(logdir).split("/")[-1]
-        # Initialize WandB
-        wandb.init(project="isaac_takeoff", config={"logdir": str(logdir)}, name=name)
+		name = str(logdir).split("/")[-2] + "_" + str(logdir).split("/")[-1]
+		# Initialize WandB
+		wandb.init(project="isaac_takeoff", config={"logdir": str(logdir)}, name=name)
 
-    def config(self, config_dict):
-        # Convert PosixPath objects to strings
-        config_dict = {
-            k: str(v) if isinstance(v, pathlib.PosixPath) else v
-            for k, v in config_dict.items()
-        }
-        # Log the config
-        wandb.config.update(config_dict)
+	def config(self, config_dict):
+		# Convert PosixPath objects to strings
+		config_dict = {
+			k: str(v) if isinstance(v, pathlib.PosixPath) else v
+			for k, v in config_dict.items()
+		}
+		# Log the config
+		wandb.config.update(config_dict)
 
-    def scalar(self, name, value):
-        self._scalars[name] = float(value)
+	def scalar(self, name, value):
+		self._scalars[name] = float(value)
 
-    def image(self, name, value):
-        self._images[name] = np.array(value)
+	def image(self, name, value):
+		self._images[name] = np.array(value)
 
-    def video(self, name, value):
-        # value: 期望是 (B, T, H, W, C)
-        self._videos[name] = np.array(value)
+	def video(self, name, value):
+		# value: 期望是 (B, T, H, W, C)
+		self._videos[name] = np.array(value)
 
-    # ------------ 关键新增：把 numpy 视频写成 mp4 文件 ------------
-    def _array_to_mp4(self, value, fps=20):
-        """
-        value: numpy 数组，形状 (T, H, W, C)，dtype uint8
-        返回：临时 mp4 文件路径
-        """
-        value = np.asarray(value)
-        assert value.ndim == 4, f"video array must be 4D (T,H,W,C), got {value.shape}"
+	# ------------ 关键新增：把 numpy 视频写成 mp4 文件 ------------
+	def _array_to_mp4(self, value, fps=20):
+		"""
+		value: numpy 数组，形状 (T, H, W, C)，dtype uint8
+		返回：临时 mp4 文件路径
+		"""
+		value = np.asarray(value)
+		assert value.ndim == 4, f"video array must be 4D (T,H,W,C), got {value.shape}"
 
-        # 创建临时目录和文件名
-        tmpdir = tempfile.mkdtemp(prefix="wandb_video_")
-        filename = os.path.join(tmpdir, f"{uuid.uuid4().hex}.mp4")
+		# 创建临时目录和文件名
+		tmpdir = tempfile.mkdtemp(prefix="wandb_video_")
+		filename = os.path.join(tmpdir, f"{uuid.uuid4().hex}.mp4")
 
-        writer = imageio.get_writer(filename, fps=fps)
-        for frame in value:
-            writer.append_data(frame)
-        writer.close()
+		writer = imageio.get_writer(filename, fps=fps)
+		for frame in value:
+			writer.append_data(frame)
+		writer.close()
 
-        return filename
+		return filename
 
-    def write(self, fps=False, step=False, fps_namespace="", print_cli=True):
-        if not step:
-            step = self.step
-        scalars = list(self._scalars.items())
-        if fps:
-            fps_str = fps_namespace + "fps"
-            scalars.append((fps_str, self._compute_fps(step)))
-        if print_cli:
-            print(f"[{step}]", " / ".join(f"{k} {v:.1f}" for k, v in scalars))
+	def write(self, fps=False, step=False, fps_namespace="", print_cli=True):
+		if not step:
+			step = self.step
+		scalars = list(self._scalars.items())
+		if fps:
+			fps_str = fps_namespace + "fps"
+			scalars.append((fps_str, self._compute_fps(step)))
+		if print_cli:
+			print(f"[{step}]", " / ".join(f"{k} {v:.1f}" for k, v in scalars))
 
-        # Log metrics to WandB
-        metrics = {"step": step, **dict(scalars)}
-        wandb.log(metrics, step=step)
+		# Log metrics to WandB
+		metrics = {"step": step, **dict(scalars)}
+		wandb.log(metrics, step=step)
 
-        # ----- images -----
-        for name, value in self._images.items():
-            if np.shape(value)[0] == 3:  # (C,H,W) -> (H,W,C)
-                value = np.transpose(value, (1, 2, 0))
-            wandb.log({name: [wandb.Image(value, caption=name)]}, step=step)
+		# ----- images -----
+		for name, value in self._images.items():
+			if np.shape(value)[0] == 3:  # (C,H,W) -> (H,W,C)
+				value = np.transpose(value, (1, 2, 0))
+			wandb.log({name: [wandb.Image(value, caption=name)]}, step=step)
 
-        # ----- videos -----
-        for name, value in self._videos.items():
-            name = name if isinstance(name, str) else name.decode("utf-8")
+		# ----- videos -----
+		for name, value in self._videos.items():
+			name = name if isinstance(name, str) else name.decode("utf-8")
 
-            # value 预期 shape: (B, T, H, W, C)
-            if np.issubdtype(value.dtype, np.floating):
-                value = np.clip(255 * value, 0, 255).astype(np.uint8)
+			# value 预期 shape: (B, T, H, W, C)
+			if np.issubdtype(value.dtype, np.floating):
+				value = np.clip(255 * value, 0, 255).astype(np.uint8)
 
-            if value.ndim != 5:
-                raise ValueError(f"Expected video value with 5 dims (B,T,H,W,C), got {value.shape}")
+			if value.ndim != 5:
+				raise ValueError(f"Expected video value with 5 dims (B,T,H,W,C), got {value.shape}")
 
-            B, T, H, W, C = value.shape
+			B, T, H, W, C = value.shape
 
-            # 把 batch 和 width 合并，得到一个横向拼接的视频：
-            # (B, T, H, W, C) -> (T, H, B*W, C)
-            value = value.transpose(1, 2, 0, 3, 4).reshape(T, H, B * W, C)
+			# 把 batch 和 width 合并，得到一个横向拼接的视频：
+			# (B, T, H, W, C) -> (T, H, B*W, C)
+			value = value.transpose(1, 2, 0, 3, 4).reshape(T, H, B * W, C)
 
-            try:
-                # 1) 自己编码为 mp4 文件
-                video_path = self._array_to_mp4(value, fps=20)
-                # 2) 传路径给 wandb.Video（不会再触发 moviepy 的 encode 错误）
-                wandb.log({name: wandb.Video(video_path)}, step=step)
-            except Exception as e:
-                print(f"[Logger] Failed to log video {name}: {e}")
+			try:
+				# 1) 自己编码为 mp4 文件
+				video_path = self._array_to_mp4(value, fps=20)
+				# 2) 传路径给 wandb.Video（不会再触发 moviepy 的 encode 错误）
+				wandb.log({name: wandb.Video(video_path)}, step=step)
+			except Exception as e:
+				print(f"[Logger] Failed to log video {name}: {e}")
 
-        # 清空缓存
-        self._scalars = {}
-        self._images = {}
-        self._videos = {}
+		# 清空缓存
+		self._scalars = {}
+		self._images = {}
+		self._videos = {}
 
-    def _compute_fps(self, step):
-        if self._last_step is None:
-            self._last_time = time.time()
-            self._last_step = step
-            return 0
-        steps = step - self._last_step
-        duration = time.time() - self._last_time
-        self._last_time += duration
-        self._last_step = step
-        return steps / duration
+	def _compute_fps(self, step):
+		if self._last_step is None:
+			self._last_time = time.time()
+			self._last_step = step
+			return 0
+		steps = step - self._last_step
+		duration = time.time() - self._last_time
+		self._last_time += duration
+		self._last_step = step
+		return steps / duration
 
-    def offline_scalar(self, name, value, step):
-        wandb.log({f"scalars/{name}": value}, step=step)
+	def offline_scalar(self, name, value, step):
+		wandb.log({f"scalars/{name}": value}, step=step)
 
-    def offline_video(self, name, value, step):
-        # value: 预期 (B, T, H, W, C)
-        if np.issubdtype(value.dtype, np.floating):
-            value = np.clip(255 * value, 0, 255).astype(np.uint8)
+	def offline_video(self, name, value, step):
+		# value: 预期 (B, T, H, W, C)
+		if np.issubdtype(value.dtype, np.floating):
+			value = np.clip(255 * value, 0, 255).astype(np.uint8)
 
-        if value.ndim != 5:
-            raise ValueError(f"Expected video value with 5 dims (B,T,H,W,C), got {value.shape}")
+		if value.ndim != 5:
+			raise ValueError(f"Expected video value with 5 dims (B,T,H,W,C), got {value.shape}")
 
-        B, T, H, W, C = value.shape
-        value = value.transpose(1, 2, 0, 3, 4).reshape(T, H, B * W, C)
+		B, T, H, W, C = value.shape
+		value = value.transpose(1, 2, 0, 3, 4).reshape(T, H, B * W, C)
 
-        try:
-            video_path = self._array_to_mp4(value, fps=20)
-            wandb.log({name: wandb.Video(video_path)}, step=step)
-        except Exception as e:
-            print(f"[Logger] Failed to log offline video {name}: {e}")
+		try:
+			video_path = self._array_to_mp4(value, fps=20)
+			wandb.log({name: wandb.Video(video_path)}, step=step)
+		except Exception as e:
+			print(f"[Logger] Failed to log offline video {name}: {e}")
 
 
 def simulate(
@@ -335,174 +335,211 @@ def simulate(
 import datetime
 import uuid
 def simulate_vecenv(
-    agent,  # 智能体
-    vecenv,  # 一个包含N个子环境的单一向量化环境
-    cache,  # 数据缓存
-    directory,  # 保存数据的目录
-    logger,  # 日志记录器
-    is_eval=False,  # 是否为评估模式
-    limit=None,  # 数据集大小限制
-    steps=0,  # 总步数
-    episodes=0,  # 总回合数
-    state=None,  # 初始化状态
-    save_success=False  # 是否保存成功的轨迹
+	agent,  # 智能体
+	vecenv,  # 一个包含N个子环境的单一向量化环境
+	cache,  # 数据缓存
+	directory,  # 保存数据的目录
+	logger,  # 日志记录器
+	is_eval=False,  # 是否为评估模式
+	limit=None,  # 数据集大小限制
+	steps=0,  # 总步数
+	episodes=0,  # 总回合数
+	state=None,  # 初始化状态
+	save_success=False  # 是否保存成功的轨迹
 ):
-    # 获取向量化环境中的子环境数量
-    num_env = vecenv.num_envs
-    id_bank = [str(uuid.uuid4()) for _ in range(num_env)]  # 为每个子环境生成唯一的ID
+	# 获取向量化环境中的子环境数量
+	num_env = vecenv.num_envs
+	id_bank = [str(uuid.uuid4()) for _ in range(num_env)]  # 为每个子环境生成唯一的ID
 
-    # 解包或初始化仿真状态
-    if state is None:
-        step, episode = 0, 0
-        done = np.ones(num_env, bool)  # 所有子环境的done状态初始化为True
-        length = np.zeros(num_env, np.int32)  # 所有子环境的步长初始化为0
-        obs = None  # 初始化观察为空
-        agent_state = None  # 智能体状态初始化为空
-        reward = np.zeros(num_env, dtype=np.float32)  # 初始化奖励为0
-    else:
-        step, episode, done, length, obs, agent_state, reward = state  # 使用传入的状态
+	# 解包或初始化仿真状态
+	if state is None:
+		step, episode = 0, 0
+		done = np.ones(num_env, bool)  # 所有子环境的done状态初始化为True
+		length = np.zeros(num_env, np.int32)  # 所有子环境的步长初始化为0
+		obs = None  # 初始化观察为空
+		agent_state = None  # 智能体状态初始化为空
+		reward = np.zeros(num_env, dtype=np.float32)  # 初始化奖励为0
+	else:
+		step, episode, done, length, obs, agent_state, reward = state  # 使用传入的状态
 
-    # 如果环境在done时自动重置子环境，初始时只需要进行一次重置
-    if obs is None:
-        # 观察形状可能是 (num_env, obs_dim, ...)
-        obs = vecenv.reset()
+	# 如果环境在done时自动重置子环境，初始时只需要进行一次重置
+	if obs is None:
+		# 观察形状可能是 (num_env, obs_dim, ...)
+		obs = vecenv.reset()
 
-        # 如果需要将这些初始状态添加到缓存中
-        for i in range(num_env):
-            t = {key: value[i].detach().cpu() for key, value in obs.items()}
-            t["reward"] = 0.0
-            t["discount"] = 1.0
-            t["failure"] = 0.0
-            add_to_cache(cache, id_bank[i], t)  # 使用子环境的ID作为键
+		# 如果需要将这些初始状态添加到缓存中
+		for i in range(num_env):
+			t = {key: value[i].detach().cpu() for key, value in obs.items()}
+			t["reward"] = 0.0
+			t["discount"] = 1.0
+			t["failure"] = 0.0
+			add_to_cache(cache, id_bank[i], t)  # 使用子环境的ID作为键
 
-    # 主循环
-    while ((steps and step < steps) or (episodes and episode < episodes)):
+	# 主循环
+	while ((steps and step < steps) or (episodes and episode < episodes)):
 
-        step_info = f"{step + 1}/{steps}" if steps is not None else f"{step + 1} (没有上限)"
-        episode_info = f"{episode + 1}/{episodes}" if episodes is not None else f"{episode + 1} (没有上限)"
-        print(f"当前步骤: {step_info} (步长: {length}) | 当前回合: {episode_info}", end="\r", flush=True)
+		step_info = f"{step + 1}/{steps}" if steps is not None else f"{step + 1} (没有上限)"
+		episode_info = f"{episode + 1}/{episodes}" if episodes is not None else f"{episode + 1} (没有上限)"
+		print(f"当前步骤: {step_info} (步长: {length}) | 当前回合: {episode_info}", end="\r", flush=True)
 
-        # 智能体执行一步
-        # obs 形状是 (num_env, ...) 
-        # done 形状是 (num_env,)
-        # 如果智能体需要批量字典输入，转换obs为字典
-        obs_dict = obs
+		# 智能体执行一步
+		# obs 形状是 (num_env, ...) 
+		# done 形状是 (num_env,)
+		# 如果智能体需要批量字典输入，转换obs为字典
+		obs_dict = obs
 
-        action, agent_state = agent(obs_dict, done, agent_state)
+		action, agent_state = agent(obs_dict, done, agent_state)
 
-        # 执行一次环境的step操作，处理整个批次
-        next_obs, next_reward, next_done, info = vecenv.step(action)
-        # 返回值的形状:
-        #   next_obs:   (num_env, ...)
-        #   next_reward:(num_env,)
-        #   next_done:  (num_env,)
+		# 执行一次环境的step操作，处理整个批次
+		next_obs, next_reward, next_done, info = vecenv.step(action)
+		# 获取图像观察
+		# 假设 obs_images 是 (num_envs, H, W, C) 的 Tensor
+		obs_images = next_obs['image']
 
-        next_done = next_done.cpu().numpy()
+		# 1. 提取特定环境的图像 (例如第 2 个环境，索引 1)
+		if isinstance(obs_images, (list, tuple)):
+			image_tensor = obs_images[0]
+		else:
+			image_tensor = obs_images[0] 
 
-        # 更新计数器
-        episode += int(next_done.sum())   # 计算这一轮完成的子环境数
-        length += 1                       # 增加所有进行中的回合的长度
-        step += num_env                   # 每个子环境进行了一步
-        length *= (1 - next_done)         # 重置已完成的子环境的步长
+		# 2. 处理 Tensor 并转为 Numpy
+		if isinstance(image_tensor, torch.Tensor):
+			# clone() 和 detach() 确保不影响计算图
+			# cpu() 移至内存, numpy() 转为数组
+			image_np = image_tensor.clone().detach().cpu().numpy()
+		else:
+			image_np = image_tensor
 
-        # 将转移数据添加到缓存中
-        for i in range(num_env):
+		# 3. 格式标准化处理 (Isaac Lab -> OpenCV)
+		if image_np is not None and image_np.size > 0:
+			# --- 处理颜色空间 (RGB/RGBA -> BGR) ---
+			# OpenCV 默认使用 BGR，而 Isaac Lab 通常输出 RGB 或 RGBA
+			if len(image_np.shape) == 3:
+				channels = image_np.shape[2]
+				if channels == 3:
+					# RGB 转 BGR
+					image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+				elif channels == 4:
+					# RGBA 转 BGR (丢弃透明通道)
+					image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2BGR)
 
-            transition = {key: value[i].detach().cpu().numpy() for key, value in next_obs.items()}
+			# 4. 显示图像
+			cv2.imshow('Camera Feed (Env 1)', image_np)
+			
+			# 必须调用 waitKey 才能刷新窗口，1ms 表示非阻塞
+			cv2.waitKey(1)
 
-            # 处理缺失的最后一个观察值（在向量化环境中）
-            if next_done[i]:
-                overwrite_keys = ["image", "policy"]
-                for key in overwrite_keys:
-                    transition[key] = obs[key][i].detach().cpu().numpy()
+		# 返回值的形状:
+		#   next_obs:   (num_env, ...)
+		#   next_reward:(num_env,)
+		#   next_done:  (num_env,)
 
-            # 添加动作
-            if isinstance(action, dict):
-                for k, v in action.items():
-                    transition[k] = v[i].cpu().numpy()
-            else:
-                transition["action"] = np.array(action)
+		next_done = next_done.cpu().numpy()
 
-            transition["reward"] = next_reward[i].item()
-            transition["discount"] = np.array(1.0, dtype=np.float32)
+		# 更新计数器
+		episode += int(next_done.sum())   # 计算这一轮完成的子环境数
+		length += 1                       # 增加所有进行中的回合的长度
+		step += num_env                   # 每个子环境进行了一步
+		length *= (1 - next_done)         # 重置已完成的子环境的步长
 
-            # # 标记失败的过渡
-            # if transition["reward"] < -0.2:
-            #     transition["failure"] = 1.0 
-            #     cache[id_bank[i]]["failure"][-3:] = [convert(1.0) for _ in range(len(cache[id_bank[i]]["failure"][-3:]))]
-            # else:
-            #     transition["failure"] = 0.0
+		# 将转移数据添加到缓存中
+		for i in range(num_env):
+
+			transition = {key: value[i].detach().cpu().numpy() for key, value in next_obs.items()}
+
+			# 处理缺失的最后一个观察值（在向量化环境中）
+			if next_done[i]:
+				overwrite_keys = ["image", "policy"]
+				for key in overwrite_keys:
+					transition[key] = obs[key][i].detach().cpu().numpy()
+
+			# 添加动作
+			if isinstance(action, dict):
+				for k, v in action.items():
+					transition[k] = v[i].cpu().numpy()
+			else:
+				transition["action"] = np.array(action)
+
+			transition["reward"] = next_reward[i].item()
+			transition["discount"] = np.array(1.0, dtype=np.float32)
+
+			# # 标记失败的过渡
+			# if transition["reward"] < -0.2:
+			#     transition["failure"] = 1.0 
+			#     cache[id_bank[i]]["failure"][-3:] = [convert(1.0) for _ in range(len(cache[id_bank[i]]["failure"][-3:]))]
+			# else:
+			#     transition["failure"] = 0.0
 			# cache对应于train_eps，python是对象引用，所以这里修改cache也会更新train_eps中的数据
-            add_to_cache(cache, id_bank[i], transition)
+			add_to_cache(cache, id_bank[i], transition)
 
-        # 记录已完成的子环境数据
-        done_indices = np.where(next_done)[0]
-        if len(done_indices) > 0:
-            for i in done_indices:
-                # 保存已完成的回合
-                index = id_bank[i]
-                length = len(cache[index]["reward"]) - 1
-                score = float(np.array(cache[index]["reward"]).sum())
-                video_front = cache[index]["image"]
-                failure_data = cache[index]["failure"]
-                video = video_front
+		# 记录已完成的子环境数据
+		done_indices = np.where(next_done)[0]
+		if len(done_indices) > 0:
+			for i in done_indices:
+				# 保存已完成的回合
+				index = id_bank[i]
+				length = len(cache[index]["reward"]) - 1
+				score = float(np.array(cache[index]["reward"]).sum())
+				video_front = cache[index]["image"]
+				failure_data = cache[index]["failure"]
+				video = video_front
 
-                # 保存录制的视频
-                if save_success and next_reward[i].item() > 0.6:
-                    filename = "success_" + index
-                    save_episodes(directory, {filename: cache[index]})
-                    save_video(directory, filename, video, failure_data)
-                elif save_success and next_reward[i].item() < -0.2:
-                    filename = "failure_" + index
-                    save_episodes(directory, {filename: cache[index]})
-                    save_video(directory, filename, video, failure_data)
+				# 保存录制的视频
+				if save_success and next_reward[i].item() > 0.6:
+					filename = "success_" + index
+					save_episodes(directory, {filename: cache[index]})
+					save_video(directory, filename, video, failure_data)
+				elif save_success and next_reward[i].item() < -0.2:
+					filename = "failure_" + index
+					save_episodes(directory, {filename: cache[index]})
+					save_video(directory, filename, video, failure_data)
 
-                # 记录环境相关的信息
-                for key in list(cache[index].keys()):
-                    if "log_" in key:
-                        logger.scalar(key, float(np.array(cache[index][key]).sum()))
-                        cache[index].pop(key)
+				# 记录环境相关的信息
+				for key in list(cache[index].keys()):
+					if "log_" in key:
+						logger.scalar(key, float(np.array(cache[index][key]).sum()))
+						cache[index].pop(key)
 
-                if not is_eval:
-                    step_in_dataset = erase_over_episodes(cache, limit)
-                    logger.scalar(f"数据集大小", step_in_dataset)
-                    logger.scalar(f"训练返回", score)
-                    logger.scalar(f"训练步长", length)
-                    logger.scalar(f"训练回合", len(cache))
-                    logger.write(step=logger.step)
-                else:
-                    if not "eval_lengths" in locals():
-                        eval_lengths = []
-                        eval_scores = []
-                        eval_done = False
-                    eval_scores.append(score)
-                    eval_lengths.append(length)
+				if not is_eval:
+					step_in_dataset = erase_over_episodes(cache, limit)
+					logger.scalar(f"数据集大小", step_in_dataset)
+					logger.scalar(f"训练返回", score)
+					logger.scalar(f"训练步长", length)
+					logger.scalar(f"训练回合", len(cache))
+					logger.write(step=logger.step)
+				else:
+					if not "eval_lengths" in locals():
+						eval_lengths = []
+						eval_scores = []
+						eval_done = False
+					eval_scores.append(score)
+					eval_lengths.append(length)
 
-                    score = sum(eval_scores) / len(eval_scores)
-                    length = sum(eval_lengths) / len(eval_lengths)
-                    logger.video(f"评估策略", np.array(video)[None])
+					score = sum(eval_scores) / len(eval_scores)
+					length = sum(eval_lengths) / len(eval_lengths)
+					logger.video(f"评估策略", np.array(video)[None])
 
-                    if len(eval_scores) >= episodes and not eval_done:
-                        logger.scalar(f"评估返回", score)
-                        logger.scalar(f"评估步长", length)
-                        logger.scalar(f"评估回合", len(eval_scores))
-                        logger.write(step=logger.step)
-                        eval_done = True
+					if len(eval_scores) >= episodes and not eval_done:
+						logger.scalar(f"评估返回", score)
+						logger.scalar(f"评估步长", length)
+						logger.scalar(f"评估回合", len(eval_scores))
+						logger.write(step=logger.step)
+						eval_done = True
 
-                # 将ID更改为新的ID
-                id_bank[i] = str(uuid.uuid4())
+				# 将ID更改为新的ID
+				id_bank[i] = str(uuid.uuid4())
 
-        # 继续执行
-        obs = next_obs
-        reward = next_reward
-        done = next_done
+		# 继续执行
+		obs = next_obs
+		reward = next_reward
+		done = next_done
 
-    # 如果是评估模式，保留最小的缓存
-    if is_eval:
-        while len(cache) > 1:
-            cache.popitem(last=False)
+	# 如果是评估模式，保留最小的缓存
+	if is_eval:
+		while len(cache) > 1:
+			cache.popitem(last=False)
 
-    return (step - steps, episode - episodes, done, length, obs, agent_state, reward)
+	return (step - steps, episode - episodes, done, length, obs, agent_state, reward)
 
 def get_uncertainty(wm, ensemble, latent, actions):
 
@@ -622,14 +659,14 @@ def reset_episode_df(vecenv, latent_dynamics, seed=None):
 
 # Convert NumPy data types to Python native types
 def convert_numpy(obj):
-    if isinstance(obj, np.ndarray):  # Convert NumPy arrays to lists
-        return obj.tolist()
-    elif isinstance(obj, (np.int32, np.int64)):  # Convert NumPy integers to Python int
-        return int(obj)
-    elif isinstance(obj, (np.float32, np.float64)):  # Convert NumPy floats to Python float
-        return float(obj)
-    else:
-        return obj
+	if isinstance(obj, np.ndarray):  # Convert NumPy arrays to lists
+		return obj.tolist()
+	elif isinstance(obj, (np.int32, np.int64)):  # Convert NumPy integers to Python int
+		return int(obj)
+	elif isinstance(obj, (np.float32, np.float64)):  # Convert NumPy floats to Python float
+		return float(obj)
+	else:
+		return obj
 	
 def evaluate_venv_filtering(
 	agent_base,

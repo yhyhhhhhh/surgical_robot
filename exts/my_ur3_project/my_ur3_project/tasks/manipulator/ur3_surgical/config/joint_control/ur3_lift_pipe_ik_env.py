@@ -451,7 +451,17 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             dim=-1,
         )
         return {"policy": torch.clamp(obs, -5.0, 5.0)}
-    
+    def action_go_pipe_mouth(self):
+        # 管口(世界) + 管姿态
+        pipe_top_pos_w, pipe_quat_w = self.get_pipe_state()   # (N,3), (N,4)
+
+        actions = torch.zeros((self.num_envs, 8), device=self.device)
+        # actions 里位置是 env frame，所以要减去 env_origin
+        actions[:, :3]  = pipe_top_pos_w - self.scene.env_origins
+        actions[:, 3:7] = pipe_quat_w
+        actions[:, 7]   = 0.0   # <0.5 => 张开
+
+        return actions
     def _set_debug_vis_impl(self, debug_vis: bool):
         # create markers if necessary for the first tome
         if debug_vis:

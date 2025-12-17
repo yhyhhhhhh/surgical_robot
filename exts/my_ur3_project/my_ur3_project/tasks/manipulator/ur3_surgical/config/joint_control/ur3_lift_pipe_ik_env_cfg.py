@@ -260,4 +260,4 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
         "yaw": (-torch.pi*0.5, -torch.pi*0.5),
     }
     make_quat_unique = True
-    debug_vis = False
+    debug_vis = True
