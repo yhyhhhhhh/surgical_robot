@@ -53,7 +53,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Left_Robot",
         spawn=sim_utils.UsdFileCfg(
             # usd_path=f"/home/yhy/DVRK/ur3_scissor/ur3TipCam_pro1_1.usd",
-            usd_path=f"/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/ur3TipCam_pro1_1_v0.usd",
+            usd_path=f"exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/ur3TipCam_pro1_1_v0.usd",
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -195,7 +195,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     pipe = AssetBaseCfg(
         prim_path="/World/envs/env_.*/pipe",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/pipe_stl.usd",
+            usd_path="exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/pipe_stl.usd",
             scale=(0.5, 0.5, 0.08),
         ),
         # 这里只存 Python 原生类型
@@ -215,7 +215,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
             rot=pipe_quat,   # tuple[float]，不会再是 tensor
         ),
         spawn=UsdFileCfg(
-            usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/object1.usd",
+            usd_path="exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/object1.usd",
             # scale=(0.012, 0.02, 0.012),
             scale=(0.01, 0.018, 0.01),
             rigid_props=RigidBodyPropertiesCfg(
@@ -232,7 +232,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     table_robot = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Table_R",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/Props/Table/table.usd",
+            usd_path="exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/Props/Table/table.usd",
             scale=(1, 0.5, 0.8),
         ),
         init_state=AssetBaseCfg.InitialStateCfg(
@@ -244,7 +244,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     table_operate = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Table_O",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/Props/Table/Operating_table.usd",
+            usd_path="exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/Props/Table/Operating_table.usd",
             scale=(0.01, 0.01, 0.01),
         ),
         init_state=AssetBaseCfg.InitialStateCfg(
