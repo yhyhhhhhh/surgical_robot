@@ -379,9 +379,17 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         self._robot_ik.process_actions(pose_base)
 
         # 6) 抓手阻抗
-        target = self.gripper_min + (actions[:, 4:5] + 1.0) * 0.5 * (self.gripper_max - self.gripper_min)
-        self.gripper_cmd = target
+        # target = self.gripper_min + (actions[:, 4:5] + 1.0) * 0.5 * (self.gripper_max - self.gripper_min)
+        # self.gripper_cmd = target
 
+        # --- 夹爪：开关目标（用 a4 的符号） ---
+        close_flag = (actions[:, 4:5] > 0.0).float()  # a4>0 关，否则开
+        desired = close_flag * self.gripper_min + (1.0 - close_flag) * self.gripper_max
+
+        # --- 速度限制（平滑追踪，防抖）---
+        max_step = self.gripper_speed * self.dt  # rad per step
+        delta = torch.clamp(desired - self.gripper_cmd, -max_step, max_step)
+        self.gripper_cmd = self.gripper_cmd + delta
     # ------------------------------------------------------------------
     # 把 IK 输出写进关节目标
     # ------------------------------------------------------------------
@@ -659,12 +667,13 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         # ------------------- 1) 顺序门控：截面对齐好，轴向才“值钱” -------------------
         # 3mm 左右开始打开轴向奖励（可调）
-        g_lat = torch.sigmoid((0.0015 - e_lat) / (0.0007 + 1e-8))  # in (0,1)
+        g_lat = torch.sigmoid((0.001 - e_lat) / (0.0007 + 1e-8))  # in (0,1)
+        g_lat = g_lat
 
         # ------------------- 2) 绝对型对齐奖励（多尺度，高精度更重） -------------------
         # 截面：粗(4mm) + 细(1.5mm)
         r_lat = torch.exp(- (e_lat / 0.004) ** 2)
-        r_lat_fine = torch.exp(- (e_lat / 0.0015) ** 2)
+        r_lat_fine = torch.exp(- (e_lat / 0.001) ** 2)
 
         # 轴向：粗(10mm) + 细(3mm)，并乘门控 g_lat
         r_ax = torch.exp(- (e_ax / 0.010) ** 2)
@@ -672,10 +681,10 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         r_ax_all = g_lat * (0.6 * r_ax + 0.4 * r_ax_fine)
 
         # 合并：截面主导，轴向次之（可调权重）
-        align_reward = 1.6 * (0.6 * r_lat + 0.4 * r_lat_fine) + 1.0 * r_ax_all
+        align_reward = 1.6 * (0.6 * r_lat + 0.6 * r_lat_fine) + 1.0 * r_ax_all
 
         # 3D 兜底：防止分解误差边角（权重小）
-        dist_reward = 0.25 * torch.exp(- (ee_dist / 0.006) ** 2)
+        dist_reward = 0.25 * g_lat * torch.exp(- (ee_dist / 0.006) ** 2)
 
         # ------------------- 2.5) yaw 对齐奖励（绕 world z 轴） -------------------
         # 取末端/物体世界四元数 (w,x,y,z)
@@ -708,14 +717,24 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         # ------------------- 3) 夹爪“跟随目标”奖励（绝对型） -------------------
         # grip_norm: 0=闭, 1=开
+        # grip_norm = (self.gripper_cmd - self.gripper_min) / (self.gripper_max - self.gripper_min + 1e-6)
+        # grip_norm = torch.clamp(grip_norm, 0.0, 1.0).squeeze(-1)
+
+        # # 当 (e_lat<~1.8mm 且 e_ax<~3mm) 时，开始希望闭合
+        g_close = torch.sigmoid((0.0018 - e_lat) / (0.0005 + 1e-8)) * torch.sigmoid((0.002 - e_ax) / (0.001 + 1e-8))
+        # target_grip = 1.0 - g_close  # 远 -> 1(开), 近 -> 0(闭)
+
+        # # “跟随目标”的绝对奖励：1 - |grip - target|  (范围[0,1])
+        # gripper_reward = 0.6 * (1.0 - torch.abs(grip_norm - target_grip))
+        # grip_norm: 0=闭, 1=开
         grip_norm = (self.gripper_cmd - self.gripper_min) / (self.gripper_max - self.gripper_min + 1e-6)
         grip_norm = torch.clamp(grip_norm, 0.0, 1.0).squeeze(-1)
 
-        # 当 (e_lat<~1.8mm 且 e_ax<~3mm) 时，开始希望闭合
-        g_close = torch.sigmoid((0.0018 - e_lat) / (0.0005 + 1e-8)) * torch.sigmoid((0.003 - e_ax) / (0.001 + 1e-8))
-        target_grip = 1.0 - g_close  # 远 -> 1(开), 近 -> 0(闭)
+        # 希望闭合的门控（你已有 g_close）
+        # target 开关：远=1(开)，近=0(闭)
+        target_grip = (1.0 - g_close)
 
-        # “跟随目标”的绝对奖励：1 - |grip - target|  (范围[0,1])
+        # 用“接近开/闭两端”的 reward（避免卡在中间）
         gripper_reward = 0.6 * (1.0 - torch.abs(grip_norm - target_grip))
 
         # ------------------- 4) 安全约束：越管壁/跑出管长 -------------------

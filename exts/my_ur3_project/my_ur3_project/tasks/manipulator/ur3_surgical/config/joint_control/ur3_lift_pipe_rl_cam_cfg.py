@@ -1,7 +1,7 @@
 from __future__ import annotations
 import torch
 import omni.isaac.lab.sim as sim_utils
-from omni.isaac.lab.actuators.actuator_cfg import ImplicitActuatorCfg
+from omni.isaac.lab.actuators.actuator_cfg import ImplicitActuatorCfg,IdealPDActuatorCfg
 from omni.isaac.lab.assets import ArticulationCfg, AssetBaseCfg,RigidObjectCfg
 from omni.isaac.lab.envs import DirectRLEnvCfg
 from omni.isaac.lab.scene import InteractiveSceneCfg
@@ -85,33 +85,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
 
             pos=(0.15, -0.55, -0.16), rot=(1, 0.0, 0.0, 0.0),
         ),
-        # actuators={
-        #     "arm": ImplicitActuatorCfg(
-        #         joint_names_expr=['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'],
-        #         velocity_limit=100.0,
-        #         effort_limit=100.0,
-        #         stiffness=800.0,
-        #         damping=40.0,
-        #     ),
-        #     "tip": ImplicitActuatorCfg(
-        #         joint_names_expr=["tip_joint"],
-        #         velocity_limit=100.0,
-        #         effort_limit=100.0,
-        #         stiffness=800,
-        #         damping=40.0,
-        #     ),
-        # },
         actuators={
-            # "arm": ImplicitActuatorCfg(
-            #     joint_names_expr=[
-            #         "shoulder_pan_joint","shoulder_lift_joint","elbow_joint",
-            #         "wrist_1_joint","wrist_2_joint","wrist_3_joint"
-            #     ],
-            #     velocity_limit=100.0,
-            #     effort_limit=1000.0,          # ② 扭矩上限调高
-            #     stiffness=10000.0,            # ③ KP/KD 更硬
-            #     damping=100,
-            # ),
             "arm": ImplicitActuatorCfg(
                 joint_names_expr=[
                     "shoulder_pan_joint","shoulder_lift_joint","elbow_joint",
@@ -122,20 +96,21 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
                 stiffness=800.0,            # ③ KP/KD 更硬
                 damping=80.0,
             ),
-            # "arm": ImplicitActuatorCfg(
-            #     joint_names_expr=['shoulder_pan_joint', 'shoulder_lift_joint', 'elbow_joint', 'wrist_1_joint', 'wrist_2_joint', 'wrist_3_joint'],
-            #     velocity_limit=100.0,
-            #     effort_limit=5000.0,
-            #     stiffness=10000000.0,
-            #     damping=100000.0,
+            # "tip": ImplicitActuatorCfg(
+            #     joint_names_expr=["tip_joint"],
+            #     velocity_limit=3.0,
+            #     effort_limit=5.0,
+            #     stiffness=80.0,
+            #     damping=10.0,
             # ),
-            "tip": ImplicitActuatorCfg(
+            "tip": IdealPDActuatorCfg(
                 joint_names_expr=["tip_joint"],
-                velocity_limit=3.0,
-                effort_limit=5.0,
-                stiffness=200.0,
-                damping=20.0,
+                velocity_limit=1.0,
+                effort_limit=2.0,
+                stiffness=50.0,
+                damping=10.0,
             ),
+
         },
     )
     
