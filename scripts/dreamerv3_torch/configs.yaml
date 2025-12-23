@@ -2,7 +2,7 @@ defaults:
 
   model_only: False
   model_path: null
-  use_ensemble: True  # True
+  use_ensemble: False  # True
   use_unit_ensemble: False 
   use_nf: False
   remark: 'test'
@@ -106,5 +106,5 @@ debug:
   debug: True
   pretrain: 1
   prefill: 1
-  batch_size: 10
-  batch_length: 20
+  batch_size: 4
+  batch_length: 4

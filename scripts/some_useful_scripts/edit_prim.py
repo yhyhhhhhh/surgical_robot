@@ -17,7 +17,7 @@ simulation_app = app_launcher.app
 from pxr import Usd, Sdf
 
 # 原始 usd 路径
-USD_PATH = "/home/yhy/DVRK/ur3_scissor/object1.usd"
+USD_PATH = "exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/object1.usd"
 # 如果想另存一个版本，在这里填新路径；为 None 表示覆盖原文件
 OUT_PATH = None
 
@@ -48,7 +48,7 @@ def main():
     # 质量：调到 0.02 kg（20g），你可以改成 0.01~0.05 按效果微调
     mass_attr = get_or_create_attr(obj_prim, "physics:mass", Sdf.ValueTypeNames.Float)
     print("  physics:mass old:", mass_attr.Get())
-    mass_attr.Set(0.02)
+    mass_attr.Set(0.001)
     print("  physics:mass new:", mass_attr.Get())
 
     # 线性/角阻尼：让物体更“黏”

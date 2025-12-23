@@ -27,15 +27,15 @@ from scipy.spatial.transform import Rotation as R
 def main():
     num_envs = 2
     env_cfg: Ur3LiftNeedleEnvCfg = parse_env_cfg(
-        "My-Isaac-Ur3-PipeRelCam-Ik-RL-Direct-v0",
+        "My-Isaac-Ur3-PipeRelCamFinal-Ik-RL-Direct-v0",
         device=args_cli.device,
         num_envs=num_envs,
     )
 
-    env = gym.make("My-Isaac-Ur3-PipeRelCam-Ik-RL-Direct-v0", cfg=env_cfg)
+    env = gym.make("My-Isaac-Ur3-PipeRelCamFinal-Ik-RL-Direct-v0", cfg=env_cfg)
 
     env.reset()
-    # camera = env.scene["Camera"]
+    camera = env.scene["Camera"]
     camera_index = 0
     # ---------------------------------------------------------
     # 关键修改部分：准备动作张量
@@ -53,40 +53,40 @@ def main():
         # 执行动作
         ret = env.step(actions)
         
-        # try:
-        #     # 获取图像观察
-        #     # 假设 obs_images 是 (num_envs, H, W, C) 的 Tensor
-        #     obs_images = env.unwrapped.get_image_observation() 
+        try:
+            # 获取图像观察
+            # 假设 obs_images 是 (num_envs, H, W, C) 的 Tensor
+            obs_images = env.unwrapped.get_image_observation() 
             
-        #     # 1. 提取特定环境的图像 (例如第 2 个环境，索引 1)
-        #     if isinstance(obs_images, (list, tuple)):
-        #         image_tensor = obs_images[1]
-        #     else:
-        #         image_tensor = obs_images[1] 
+            # 1. 提取特定环境的图像 (例如第 2 个环境，索引 1)
+            if isinstance(obs_images, (list, tuple)):
+                image_tensor = obs_images[1]
+            else:
+                image_tensor = obs_images[1] 
 
-        #     image_np = image_tensor.clone().detach().cpu().numpy()
+            image_np = image_tensor.clone().detach().cpu().numpy()
 
-        #     # --- 处理颜色空间 (RGB/RGBA -> BGR) ---
-        #     # OpenCV 默认使用 BGR，而 Isaac Lab 通常输出 RGB 或 RGBA
-        #     if len(image_np.shape) == 3:
-        #         channels = image_np.shape[2]
-        #         if channels == 3:
-        #             # RGB 转 BGR
-        #             image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-        #         elif channels == 4:
-        #             # RGBA 转 BGR (丢弃透明通道)
-        #             image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2BGR)
+            # --- 处理颜色空间 (RGB/RGBA -> BGR) ---
+            # OpenCV 默认使用 BGR，而 Isaac Lab 通常输出 RGB 或 RGBA
+            if len(image_np.shape) == 3:
+                channels = image_np.shape[2]
+                if channels == 3:
+                    # RGB 转 BGR
+                    image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+                elif channels == 4:
+                    # RGBA 转 BGR (丢弃透明通道)
+                    image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2BGR)
 
-        #     # 4. 显示图像
-        #     cv2.imshow('Camera Feed (Env 1)', image_np)
+            # 4. 显示图像
+            cv2.imshow('Camera Feed (Env 1)', image_np)
             
-        #     # 必须调用 waitKey 才能刷新窗口，1ms 表示非阻塞
-        #     cv2.waitKey(1)
+            # 必须调用 waitKey 才能刷新窗口，1ms 表示非阻塞
+            cv2.waitKey(1)
                 
-        # except Exception as e:
-        #     # 打印简短错误信息以便调试 (但防止刷屏)
-        #     # print(f"Image Error: {e}") 
-        #     pass
+        except Exception as e:
+            # 打印简短错误信息以便调试 (但防止刷屏)
+            # print(f"Image Error: {e}") 
+            pass
     env.close()
     cv2.destroyAllWindows()
 

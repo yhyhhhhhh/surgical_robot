@@ -17,12 +17,12 @@ from pxr import Usd, UsdGeom, Gf
 # ===================== 配置区（按需修改） =====================
 
 # 要读取的 USD 文件
-# USD_PATH = "/home/yhy/DVRK/ur3_scissor/object1.usd"
+USD_PATH = "exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/object1.usd"
 # USD_PATH = "/home/yhy/DVRK/ur3_scissor/ur3TipCam_pro1_1.usd"
 # USD_PATH = "/media/yhy/PSSD/Isaac/4.0/Isaac/IsaacLab/Robots/FrankaEmika/panda_instanceable.usd"
 # USD_PATH = "/home/yhy/DVRK/ur3_scissor/ur3TipCam_pro1_1_tweaked.usd"
 # USD_PATH = "/home/yhy/DVRK/scenes/ur3_surgery_scene_flat.usd"
-USD_PATH = "/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/pipe_stl.usd"
+# USD_PATH = "/home/yhy/DVRK/IsaacLabExtensionTemplate/exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/pipe_stl.usd"
 # 从哪个 prim 开始遍历：
 #   - 例如 "/World/object"
 #   - 如果设为 None，则优先使用 stage.defaultPrim，其次 "/World"，最后用 pseudoRoot
@@ -45,7 +45,7 @@ MAX_ARRAY_ELEMS = 10
 import datetime
 
 # ====== 配置：输出日志文件路径（按需修改）======
-LOG_PATH = "/home/yhy/DVRK/ur3_scissor/pipe_stl_dump.txt"
+LOG_PATH = "exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/object1_dump.txt"
 # =================================================
 
 

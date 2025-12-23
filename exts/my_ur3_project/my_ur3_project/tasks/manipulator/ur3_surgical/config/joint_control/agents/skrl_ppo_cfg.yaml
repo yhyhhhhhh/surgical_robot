@@ -14,9 +14,19 @@ models:
 
     # ✅ 合理探索范围（适合从零训练）
     clip_log_std: True
-    min_log_std: -4.0
-    max_log_std: -1.0
-    initial_log_std: -2.0
+    # 1. 允许更大的最大噪声
+    # 原值 -1.0 (sigma=0.36) 太小了，限制了它尝试大幅度动作的能力
+    # 改为 >= 0.0，允许它覆盖整个动作空间 [-1, 1]
+    max_log_std: 1.0  
+    
+    # 2. 只有在极其确定时才减小噪声
+    min_log_std: -5.0 
+
+    # 3. 大幅提高初始噪声 (最重要的一步)
+    # 原值 -2.0 (sigma=0.135) -> 机器人几乎不动
+    # 改为 0.0 (sigma=1.0) -> 机器人初始会进行全幅度的随机尝试
+    # 如果觉得太疯，可以改为 -0.5 (sigma=0.6)
+    initial_log_std: 0.0
 
     network:
       - name: net
@@ -73,10 +83,18 @@ agent:
   time_limit_bootstrap: False
   # logging and checkpoint
   experiment:
-    directory: "franka_cabinet_direct"
-    experiment_name: ""
+    directory: "My-Surgical-Robot-Project"
+    experiment_name: ""  # 如果留空，skrl 会自动生成带时间戳的名称
     write_interval: 10
     checkpoint_interval: 10000
+
+    # --- 新增 WandB 配置 ---
+    wandb: True
+    wandb_kwargs:
+      project: "My-Surgical-Robot-Project"     # 【必填】你的 WandB 项目名称
+      name: "ur3_surgical_run_01"  # (可选) 本次实验在网页上显示的名称
+      tags: ["SKRL", "RL"] # (可选) 给实验打标签，方便后续筛选
+      monitor_gym: False              # (可选) 如果环境支持渲染，这将自动上传视频到 WandB
 
 # Sequential trainer
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html

@@ -332,6 +332,13 @@ def simulate(
 			cache.popitem(last=False)
 	return (step - steps, episode - episodes, done, length, obs, agent_state, reward)
 
+def linear_to_srgb(x: np.ndarray) -> np.ndarray:
+    """IEC 61966-2-1: linear RGB -> sRGB"""
+    x = np.clip(x, 0.0, 1.0)
+    a = 0.055
+    # piecewise
+    return np.where(x <= 0.0031308, x * 12.92, (1.0 + a) * np.power(x, 1.0 / 2.4) - a)
+
 import datetime
 import uuid
 def simulate_vecenv(
@@ -392,43 +399,7 @@ def simulate_vecenv(
 
 		# 执行一次环境的step操作，处理整个批次
 		next_obs, next_reward, next_done, info = vecenv.step(action)
-		# 获取图像观察
-		# 假设 obs_images 是 (num_envs, H, W, C) 的 Tensor
-		obs_images = next_obs['image']
-
-		# 1. 提取特定环境的图像 (例如第 2 个环境，索引 1)
-		if isinstance(obs_images, (list, tuple)):
-			image_tensor = obs_images[0]
-		else:
-			image_tensor = obs_images[0] 
-
-		# 2. 处理 Tensor 并转为 Numpy
-		if isinstance(image_tensor, torch.Tensor):
-			# clone() 和 detach() 确保不影响计算图
-			# cpu() 移至内存, numpy() 转为数组
-			image_np = image_tensor.clone().detach().cpu().numpy()
-		else:
-			image_np = image_tensor
-
-		# 3. 格式标准化处理 (Isaac Lab -> OpenCV)
-		if image_np is not None and image_np.size > 0:
-			# --- 处理颜色空间 (RGB/RGBA -> BGR) ---
-			# OpenCV 默认使用 BGR，而 Isaac Lab 通常输出 RGB 或 RGBA
-			if len(image_np.shape) == 3:
-				channels = image_np.shape[2]
-				if channels == 3:
-					# RGB 转 BGR
-					image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-				elif channels == 4:
-					# RGBA 转 BGR (丢弃透明通道)
-					image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2BGR)
-
-			# 4. 显示图像
-			cv2.imshow('Camera Feed (Env 1)', image_np)
-			
-			# 必须调用 waitKey 才能刷新窗口，1ms 表示非阻塞
-			cv2.waitKey(1)
-
+		
 		# 返回值的形状:
 		#   next_obs:   (num_env, ...)
 		#   next_reward:(num_env,)
@@ -503,7 +474,7 @@ def simulate_vecenv(
 				if not is_eval:
 					step_in_dataset = erase_over_episodes(cache, limit)
 					logger.scalar(f"数据集大小", step_in_dataset)
-					logger.scalar(f"训练返回", score)
+					logger.scalar(f"训练返回", score)  ## score是回合的总奖励
 					logger.scalar(f"训练步长", length)
 					logger.scalar(f"训练回合", len(cache))
 					logger.write(step=logger.step)

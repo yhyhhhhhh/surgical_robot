@@ -18,13 +18,14 @@ from omni.isaac.lab.sim import PinholeCameraCfg
 # 自己编写的模块
 from .utils.myfunc import *
 from .utils.robot_ik_fun import DifferentialInverseKinematicsActionCfg, DifferentialInverseKinematicsAction
+import gymnasium as gym
 @configclass
 class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     
     # env
     episode_length_s = 4
     decimation = 2  # 5
-    action_space = 5
+    action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(5,))
 
     observation_space = 33
     # observation_space = 29
@@ -53,7 +54,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Left_Robot",
         spawn=sim_utils.UsdFileCfg(
             # usd_path=f"/home/yhy/DVRK/ur3_scissor/ur3TipCam_pro1_1.usd",
-            usd_path=f"exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/ur3TipCam_pro1_1_v0.usd",
+            usd_path=f"exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/ur3TipCam_pro1_1_v0_debug.usd",
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,
@@ -96,20 +97,20 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
                 stiffness=800.0,            # ③ KP/KD 更硬
                 damping=80.0,
             ),
-            # "tip": ImplicitActuatorCfg(
+            "tip": ImplicitActuatorCfg(
+                joint_names_expr=["tip_joint"],
+                velocity_limit=3.0,
+                effort_limit=10.0,
+                stiffness=200.0,
+                damping=20.0,
+            ),
+            # "tip": IdealPDActuatorCfg(
             #     joint_names_expr=["tip_joint"],
-            #     velocity_limit=3.0,
-            #     effort_limit=5.0,
-            #     stiffness=80.0,
+            #     velocity_limit=1.0,
+            #     effort_limit=2.0,
+            #     stiffness=50.0,
             #     damping=10.0,
             # ),
-            "tip": IdealPDActuatorCfg(
-                joint_names_expr=["tip_joint"],
-                velocity_limit=1.0,
-                effort_limit=2.0,
-                stiffness=50.0,
-                damping=10.0,
-            ),
 
         },
     )
@@ -194,8 +195,8 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
             # scale=(0.012, 0.02, 0.012),
             scale=(0.01, 0.018, 0.01),
             rigid_props=RigidBodyPropertiesCfg(
-                solver_position_iteration_count=32,
-                solver_velocity_iteration_count=8,
+                solver_position_iteration_count=64,
+                solver_velocity_iteration_count=32,
                 max_angular_velocity=200,
                 max_linear_velocity=200,
                 max_depenetration_velocity=1.0,
@@ -219,12 +220,12 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     table_operate = AssetBaseCfg(
         prim_path="/World/envs/env_.*/Table_O",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/Props/Table/Operating_table.usd",
-            scale=(0.01, 0.01, 0.01),
+            usd_path="exts/my_ur3_project/my_ur3_project/tasks/manipulator/ur3_surgical/assets/Props/Table/table.usd",
+            scale=(1, 0.5, 0.8),
         ),
         init_state=AssetBaseCfg.InitialStateCfg(
-            pos=(-0.2, 0.0, -0.92),
-            rot=(0.35355, 0.35355, 0.6124, 0.6124),
+            pos=(0.0, -0.15, -0.601),
+            rot=(1.0, 0.0, 0.0, 0.0),
         ),
     )
 

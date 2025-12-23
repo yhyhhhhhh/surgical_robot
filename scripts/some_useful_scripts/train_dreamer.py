@@ -304,7 +304,7 @@ if __name__ == "__main__":
 	parser.add_argument(
 		"--task",
 		type=str,
-		default="My-Isaac-Ur3-PipeRelCam-Ik-RL-Direct-v0",
+		default="My-Isaac-Ur3-PipeRelCamFinal-Ik-RL-Direct-v0",
 		help="Name of the task."
 	)
 	# 另一种任务难度的默认值示例（当前注释掉）
@@ -312,7 +312,7 @@ if __name__ == "__main__":
 
 	# 先解析已知参数，其余参数留待后面解析
 	args, remaining = parser.parse_known_args()
-
+	args.headless = True
 	# 从 configs.yaml 中加载所有配置（如 defaults / specific config 名）
 	configs = yaml.safe_load(
 		(pathlib.Path(sys.argv[0]).parent / "../dreamerv3_torch/configs.yaml").read_text()

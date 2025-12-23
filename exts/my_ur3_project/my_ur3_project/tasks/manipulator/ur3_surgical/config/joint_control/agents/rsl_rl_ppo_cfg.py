@@ -20,7 +20,7 @@ class Ur3ReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "ur3_reach_direct"
     empirical_normalization = True
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=0.05,
+        init_noise_std=1,
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
         activation="relu",
@@ -29,7 +29,7 @@ class Ur3ReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.0,
+        entropy_coef=0.5,
         num_learning_epochs=8,
         num_mini_batches=8,
         learning_rate=5.0e-4,
