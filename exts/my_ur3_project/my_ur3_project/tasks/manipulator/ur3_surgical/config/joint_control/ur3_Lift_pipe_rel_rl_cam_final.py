@@ -27,12 +27,15 @@ from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
 from pxr import UsdUtils
 import omni.isaac.lab.sim as sim_utils
 from omni.isaac.lab.sensors import Camera, Imu, RayCaster, RayCasterCamera, TiledCamera
+from collections import deque
+# import omni.ui as ui
+
 # 自己的模块
 from .utils.myfunc import *
 from .ur3_lift_pipe_ik_env_cfg import Ur3LiftPipeEnvCfg
 from .utils.robot_ik_fun import DifferentialInverseKinematicsAction
 import numpy as np
-import gym  # 或 gymnasium as gym，跟你工程里一致
+import gymnasium as gym  # 或 gymnasium as gym，跟你工程里一致
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +141,10 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         self.last_actions = torch.zeros(self.num_envs, 5, device=self.device)
         self.cur_actions  = torch.zeros(self.num_envs, 5, device=self.device)
 
+        # === Live UI monitor (object_lift & gripper_reward) ===
+        # self._init_live_monitor(enable=True, history_len=240, env_index=None)  
+        # env_index=None -> 取所有 env 的 mean；你也可以传 env_index=0 只看第0个环境
+
     def _build_dreamer_observation_space(self):
         # num_envs（IsaacLab vectorized env）
         nenv = int(self.num_envs)
@@ -167,7 +174,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         self._observation_space = gym.spaces.Dict({
             "policy": policy_space,
-            "image": image_space,
+            # "image": image_space,
             "is_first": flag_space,
             "is_last": flag_space,
             "is_terminal": flag_space,
@@ -203,8 +210,8 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.left_robot)
 
         # 摄像头
-        self._camera = Camera(cfg=self.cfg.camera)
-        self.scene.sensors["Camera"] = self._camera
+        # self._camera = Camera(cfg=self.cfg.camera)
+        # self.scene.sensors["Camera"] = self._camera
 
         # 管道
         self.cfg.pipe.spawn.func(
@@ -307,8 +314,9 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # actions = torch.clamp(actions, -1.0, 1.0)
         # DEBUG
         # actions = torch.clamp(actions, -0.0, 0.0)
-        self.cur_actions = torch.clamp(actions, -1.0, 1.0)
 
+        self.cur_actions = torch.clamp(actions, -1.0, 1.0)
+        # print(actions)
         # 1) 当前末端世界位姿
         ee_state = self._robot.data.body_state_w[:, self.ee_id]
         ee_pos_w = ee_state[:, 0:3]
@@ -499,6 +507,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 这里为了稳健，可以用相对高度
         
         object_lift = torch.clamp(obj_z - init_z, min=0.0)
+
         is_lifted = object_lift > 0.002 # 抬起 2mm 就算抬了
 
         # ------------------- 3) 夹爪奖励 (核心修改：规则引导 + 状态锁定) -------------------
@@ -527,7 +536,9 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             torch.zeros_like(grip_act_norm), # 闭
             torch.ones_like(grip_act_norm)   # 开
         )
-
+        # === push to live monitor ===
+        gripper_angle = self._robot.data.joint_pos[:, -1]  # 最后一个关节是夹爪
+        
         # D. 模仿惩罚 (Imitation Penalty)
         # 权重给大一点 (0.8)，让它从零开始时重视夹爪
         grip_error = torch.abs(grip_act_norm - target_grip)
@@ -550,7 +561,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         step_penalty = -0.01
 
         # ------------------- 6) 抬起与成功奖励 -------------------
-        lift_success_thr = 0.01
+        lift_success_thr = 0.005
         # 连续抬起奖励 (鼓励它越抬越高)
         lift_reward = 5.0 * torch.clamp(object_lift / lift_success_thr, 0.0, 1.0)
         
@@ -576,7 +587,8 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             step_penalty +
             smooth_pen +
             vel_pen
-        ) * 0.05
+        )
+        # self._push_live_metrics(rewards-success_reward-lift_reward, lift_reward)
         self.extras["log"] = {
             "reward/total": rewards.mean(),
             "reward/align": align_reward.mean(),
@@ -815,10 +827,10 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         is_first = (self.episode_length_buf == 0).to(torch.int32)
         zeros = torch.zeros_like(is_first)
 
-        rgb = self.get_image_observation(data_type="rgb")[..., :3]  # [N,H,W,3]
+        # rgb = self.get_image_observation(data_type="rgb")[..., :3]  # [N,H,W,3]
         return {
             "policy": state,
-            "image": rgb,
+            # "image": rgb,
             "is_first": is_first,
             "is_last": zeros,
             "is_terminal": zeros,
@@ -1004,3 +1016,149 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
 
 
+    # ------------------------------------------------------------------
+    # Live UI monitor (omni.ui) : object_lift & gripper_reward
+    # ------------------------------------------------------------------
+    def _init_live_monitor(self, enable: bool = True, history_len: int = 240, env_index: int | None = None):
+        """Create a small UI window to monitor variables in real-time (GUI mode only)."""
+        self._live_enabled = False
+        self._live_env_index = env_index
+        self._live_N = int(history_len)
+
+        # ring buffers (python floats)
+        self._live_lift = [0.0] * self._live_N
+        self._live_grip = [0.0] * self._live_N
+        self._live_ptr = 0
+        self._live_filled = 0
+
+        self._live_last_lift = 0.0
+        self._live_last_grip = 0.0
+
+        if not enable:
+            return
+
+        # If running headless, omni.ui may exist but window won't be visible; keep it safe.
+        try:
+            self._live_window = ui.Window("RL Live Monitor", width=420, height=260, visible=True)
+        except Exception:
+            return
+
+        with self._live_window.frame:
+            with ui.VStack(spacing=6):
+                ui.Label("Ur3LiftNeedleEnv - Live Metrics", height=20)
+                self._lbl_lift = ui.Label("object_lift: 0.0000 m")
+                self._lbl_grip = ui.Label("gripper_reward: 0.0000")
+
+                ui.Separator(height=2)
+
+                ui.Label(f"History (last {self._live_N} steps)")
+                # You can tune scales to your task
+                self._plot_lift = ui.Plot(
+                    ui.Type.LINE2D, 0.0, 0.02, height=70, title="object_lift (m)",
+                    style={"color": ui.color.white},
+                )
+                self._plot_grip = ui.Plot(
+                    ui.Type.LINE2D, -2.5, 0.5, height=70, title="gripper_reward",
+                    style={"color": ui.color.white},
+                )
+
+                self._live_step = 0
+                self._live_dirty = True
+                self._live_autoscale = True      # 开关
+                self._live_pad_ratio = 0.15      # 上下留白比例（15%）
+                self._live_min_span_lift = 1e-4  # lift 的最小显示跨度（防止贴成一条线）
+                self._live_min_span_grip = 1e-2  # gripper_reward 的最小显示跨度
+
+        # Subscribe a UI refresh callback (runs every render frame)
+        app_interface = omni.kit.app.get_app_interface()
+        self._live_handle = app_interface.get_post_update_event_stream().create_subscription_to_pop(
+            lambda event, obj=weakref.proxy(self): obj._update_live_monitor_ui()
+        )
+
+        self._live_enabled = True
+
+    def _push_live_metrics(self, object_lift: torch.Tensor, gripper_reward: torch.Tensor):
+        """Push latest metrics (called from _get_rewards). Keep it lightweight."""
+        if not getattr(self, "_live_enabled", False):
+            return
+
+        # Select env index or mean over all envs
+        with torch.no_grad():
+            if self._live_env_index is None:
+                lift_v = float(object_lift.detach().mean().item())
+                grip_v = float(gripper_reward.detach().mean().item())
+            else:
+                idx = int(self._live_env_index)
+                lift_v = float(object_lift.detach()[idx].item())
+                grip_v = float(gripper_reward.detach()[idx].item())
+
+        self._live_last_lift = lift_v
+        self._live_last_grip = grip_v
+
+        # ring buffer write
+        self._live_lift[self._live_ptr] = lift_v
+        self._live_grip[self._live_ptr] = grip_v
+        self._live_ptr = (self._live_ptr + 1) % self._live_N
+        self._live_filled = min(self._live_filled + 1, self._live_N)
+
+        self._live_step += 1
+        self._live_dirty = True
+
+    def _update_live_monitor_ui(self):
+        """UI thread callback: update labels."""
+        if not getattr(self, "_live_enabled", False):
+            return
+        if not hasattr(self, "_lbl_lift"):
+            return
+
+        # Text update (cheap)
+        if self._live_env_index is None:
+            prefix = f"(mean over {self.num_envs} envs)"
+        else:
+            prefix = f"(env {self._live_env_index})"
+
+        self._lbl_lift.text = f"object_lift {prefix}: {self._live_last_lift:.5f} m"
+        self._lbl_grip.text = f"gripper_reward {prefix}: {self._live_last_grip:.5f}"
+        if not getattr(self, "_live_dirty", False):
+            return
+        self._live_dirty = False
+
+        N = self._live_N
+        filled = self._live_filled
+        if filled <= 1:
+            return
+
+        # 取出按时间顺序的 y 序列
+        if filled < N:
+            lift_y = self._live_lift[:filled]
+            grip_y = self._live_grip[:filled]
+        else:
+            start = self._live_ptr  # oldest
+            lift_y = [self._live_lift[(start + i) % N] for i in range(N)]
+            grip_y = [self._live_grip[(start + i) % N] for i in range(N)]
+
+        # x 用全局 step（最后一个点是 live_step-1）
+        x0 = self._live_step - filled
+        xs = [float(x0 + i) for i in range(filled)]
+
+        self._plot_lift.set_xy_data(list(zip(xs, lift_y)))
+        self._plot_grip.set_xy_data(list(zip(xs, grip_y)))
+
+        if self._live_autoscale:
+            # ----- lift autoscale -----
+            lmin = float(min(lift_y))
+            lmax = float(max(lift_y))
+            lspan = lmax - lmin
+            lspan = max(lspan, self._live_min_span_lift)  # 防止跨度太小看不出来
+            lpad = lspan * self._live_pad_ratio
+            self._plot_lift.scale_min = max(0.0, lmin - lpad)  # lift 通常不想看负值
+            self._plot_lift.scale_max = lmax + lpad
+
+            # ----- gripper autoscale -----
+            gmin = float(min(grip_y))
+            gmax = float(max(grip_y))
+            gspan = gmax - gmin
+            gspan = max(gspan, self._live_min_span_grip)
+            gpad = gspan * self._live_pad_ratio
+            self._plot_grip.scale_min = gmin - gpad
+            self._plot_grip.scale_max = gmax + gpad

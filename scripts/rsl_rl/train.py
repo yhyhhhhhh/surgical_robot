@@ -30,10 +30,12 @@ cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
-args_cli.enable_cameras = False
+args_cli.enable_cameras = True
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
+
+args_cli.rendering_mode = "quality"   # performance / balanced / quality
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -42,6 +44,18 @@ sys.argv = [sys.argv[0]] + hydra_args
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+# ---- 在这里插入：强制设置 RTX 渲染器 ----
+import carb.settings
+
+s = carb.settings.get_settings()
+
+# 1) 实时（RTX Real-Time）
+# s.set("/rtx/rendermode", "RayTracedLighting")
+
+# 2) 路径追踪（RTX Interactive / Path Tracing）——画面更干净，但更慢
+s.set("/rtx/rendermode", "PathTracing")
+s.set("/rtx/pathtracing/totalSpp", 64)      # 采样数，越大越干净
+s.set("/rtx/post/aa/op", 3)                 # 0关 1TAA 2FXAA 3DLSS 4RTXAA
 """Rest everything follows."""
 
 import gymnasium as gym

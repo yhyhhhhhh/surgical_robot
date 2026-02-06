@@ -182,18 +182,33 @@ class RSSM(nn.Module):
             )
         # overwrite the prev_state only where is_first=True
         elif torch.sum(is_first) > 0:
-            is_first = is_first[:, None]
-            prev_action *= 1.0 - is_first
+            # --- 1) 统一 is_first 为 float mask，并压成 (B,) ---
+            # 允许 is_first 进来是 bool / int / float，形状可能是 (B,), (B,1), (B,*)...
+            if is_first.dtype == torch.bool:
+                is_first = is_first.to(torch.float32)
+            else:
+                is_first = is_first.to(torch.float32)
+
+            # 如果 is_first 不是 (B,), 把除第0维外的维度都规约掉，避免出现 (B,B,...) 广播
+            if is_first.ndim > 1:
+                reduce_dims = tuple(range(1, is_first.ndim))
+                is_first = (is_first > 0.5).any(dim=reduce_dims).to(torch.float32)
+
+            # 强制 (B,1)
+            is_first = is_first.view(-1, 1)
+
+            # --- 2) prev_action reset：prev_action 是 (B,A)，is_first 是 (B,1) 可广播 ---
+            prev_action *= (1.0 - is_first)
+
+            # --- 3) prev_state reset：按原逻辑，把 is_first reshape 到每个 val 的维度 ---
             init_state = self.initial(len(is_first))
             for key, val in prev_state.items():
                 is_first_r = torch.reshape(
                     is_first,
                     is_first.shape + (1,) * (len(val.shape) - len(is_first.shape)),
                 )
-                prev_state[key] = (
-                    val * (1.0 - is_first_r) + init_state[key] * is_first_r
-                )
-
+                prev_state[key] = val * (1.0 - is_first_r) + init_state[key] * is_first_r
+                
         prior = self.img_step(prev_state, prev_action)
         x = torch.cat([prior["deter"], embed], -1)   ## 将ht和xt拼接在一起，作为具有后验知识xt的状态
         # (batch_size, prior_deter + embed) -> (batch_size, hidden)
@@ -696,7 +711,7 @@ class MLP(nn.Module):
             std = (self._max_std - self._min_std) * torch.sigmoid(
                 std + 2.0
             ) + self._min_std
-            dist = torchd.normal.Normal(0.5 * torch.tanh(mean), std) #FIXME ([-0.5, 0.5])
+            dist = torchd.normal.Normal(torch.tanh(mean), std) #FIXME ([-0.5, 0.5])
             dist = tools.ContDist(
                 torchd.independent.Independent(dist, 1), absmax=self._absmax
             )

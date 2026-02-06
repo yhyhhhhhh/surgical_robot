@@ -1,19 +1,19 @@
 defaults:
 
   model_only: False
-  model_path: null
-  use_ensemble: False  # True
+  model_path: "latent_safety/log/dreamerv3/1225/latest.pt"
+  use_ensemble: True  # True
   use_unit_ensemble: False 
   use_nf: False
   remark: 'test'
-  logdir: 'latent_safety/log/dreamerv3'
+  logdir: 'latent_safety/log/dreamerv3/world_model_only'
   traindir: null
   evaldir: null
-  offline_traindir: null
+  offline_traindir: ['/home/yhy/IsaacLabExtensionTemplate/latent_safety/log/dreamerv3/collect_data/']
   offline_evaldir: null 
   seed: 0
   deterministic_run: False
-  steps: 1e6
+  steps: 1e4
   parallel: False
   eval_every: 1e4
   eval_episode_num: 1 # 10
@@ -24,13 +24,13 @@ defaults:
   compile: True
   precision: 32
   debug: False
-  video_pred_log: True # True
+  video_pred_log: False # True
 
   # Environment
   task: 'My-Isaac-Ur3-PipeRelCam-Ik-RL-Direct-v0'
   size: [128, 128]
   envs: 1
-  action_repeat: 2
+  action_repeat: 1
   time_limit: 1000
   grayscale: False
   prefill: 500 #2500
@@ -54,7 +54,7 @@ defaults:
   decoder:
     {mlp_keys: 'policy', cnn_keys: 'image', act: 'SiLU', norm: True, cnn_depth: 32, kernel_size: 4, minres: 4, mlp_layers: 5, mlp_units: 1024, cnn_sigmoid: False, image_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
   actor:
-    {layers: 2, dist: 'normal', entropy: 3e-4, unimix_ratio: 0.01, std: 'learned', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 3e-5, eps: 1e-5, grad_clip: 100.0, outscale: 1.0}
+    {layers: 2, dist: 'normal', entropy: 1e-3, unimix_ratio: 0.01, std: 'learned', min_std: 0.3, max_std: 2.0, temp: 0.1, lr: 3e-5, eps: 1e-5, grad_clip: 100.0, outscale: 1.0}
   critic:
     {layers: 2, dist: 'symlog_disc', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, lr: 3e-5, eps: 1e-5, grad_clip: 100.0, outscale: 0.0}
   reward_head:
@@ -72,7 +72,7 @@ defaults:
 
   # Training
   batch_size: 4
-  batch_length: 16
+  batch_length: 16 
   train_ratio: 32
   pretrain: 100
   model_lr: 1e-4
@@ -90,8 +90,8 @@ defaults:
   eval_state_mean: False
 
   # Exploration
-  expl_behavior: 'greedy'
-  expl_until: 0
+  expl_behavior: 'random'
+  expl_until: 4
   expl_extr_scale: 0.0
   expl_intr_scale: 1.0
   disag_target: 'deter'
@@ -107,4 +107,4 @@ debug:
   pretrain: 1
   prefill: 1
   batch_size: 4
-  batch_length: 4
+  batch_length: 16

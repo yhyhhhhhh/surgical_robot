@@ -1,4 +1,5 @@
 import argparse
+import collections
 import pathlib
 import functools
 import numpy as np
@@ -107,8 +108,8 @@ def main(config):
 
 	# Normalized Action!
 	# 将动作空间统一缩放到 [-0.5, 0.5]，便于网络训练与数值稳定
-	acts.low = 0.5 * np.ones_like(acts.low) * -1
-	acts.high = 0.5 * np.ones_like(acts.high) 
+	acts.low = np.ones_like(acts.low) * -1
+	acts.high = np.ones_like(acts.high) 
 	print("Action Space", acts)
 	# 记录动作维度：如果是离散动作，用 n；否则用连续动作维度
 	config.num_actions = acts.n if hasattr(acts, "n") else acts.shape[0]
@@ -117,7 +118,7 @@ def main(config):
 	state = None
 
 	# 若不是纯离线数据训练，则需要用随机策略预填充数据集
-	if not config.offline_traindir:
+	if (not config.offline_traindir) and (not getattr(config, "collect_only", False)):
 		# 需要填充的步数 = 目标 prefill 步数 - 已经存在的步数
 		prefill = max(0, config.prefill - count_steps(config.traindir))
 		print(f"Prefill dataset ({prefill} steps).")
@@ -188,6 +189,84 @@ def main(config):
 		# 允许再次预训练（取消只预训练一次的限制）
 		agent._should_pretrain._once = False
 
+	# ---------- collect-only mode ----------
+	if getattr(config, "collect_only", False):
+		if not config.model_path:
+			raise ValueError("collect_only requires --model_path to load a trained checkpoint.")
+
+		# decide collection directory
+		if config.collect_dir:
+			collect_dir = pathlib.Path(config.collect_dir).expanduser()
+		else:
+			collect_dir = logdir / "collect_eps"
+		collect_dir.mkdir(parents=True, exist_ok=True)
+
+		collect_ood_dir = '/home/yhy/IsaacLabExtensionTemplate/latent_safety/log/dreamerv3/collect_data_ood'
+
+
+		print(f"[collect_only] ID(policy) dir : {collect_dir}")
+		print(f"[collect_only] OOD(random) dir: {collect_ood_dir}")
+
+		def random_agent(o, d, s):
+			# 连续动作维度
+			act_dim = config.num_actions
+			# 注意：envs 的 action tensor 要和 env 的 device 对齐；
+			# 这里用 config.device（你训练/采集时就是这个）
+			action = 2.0 * torch.rand((config.envs, act_dim), device=config.device) - 1.0  # [-1, 1]
+			return {"action": action}, None
+		
+		# IMPORTANT: use fresh in-memory cache; do NOT reuse train_eps dict loaded from disk
+		collect_cache = collections.OrderedDict()
+
+		# hard-disable training
+		agent.requires_grad_(False)
+
+		# Use tools.collect_vecenv to rollout and save .npz
+		tools.collect_vecenv(
+			agent=random_agent,
+			vecenv=train_envs,
+			cache=collect_cache,
+			directory=collect_ood_dir,
+			logger=logger,
+			steps=int(config.collect_steps),
+			episodes=int(config.collect_episodes),
+			save_success=bool(config.collect_save_success),
+			success_key=str(config.collect_success_key),
+		)
+
+		# done
+		try:
+			train_envs.close()
+		except Exception:
+			pass
+		return
+	
+	if config.world_model_only:
+		for idx_step in trange(
+			int(config.steps),
+			desc="Finetune WORLD MODEL ONLY (offline)",
+			ncols=0,
+			leave=False
+		):
+			agent.train_world_model_only(training=True)
+
+			if ((idx_step + 1) % config.log_every) == 0:
+				items_to_save = {
+					"agent_state_dict": agent.state_dict(),
+					# 这里保存 optimizer state 可留着，但你不一定要在下次加载它
+					"optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
+				}
+				torch.save(items_to_save, logdir / "latest.pt")
+
+			if ((idx_step + 1) % config.save_every) == 0:
+				items_to_save = {
+					"agent_state_dict": agent.state_dict(),
+					"optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
+				}
+				torch.save(items_to_save, logdir / f"model_{idx_step + 1:04d}.pt")
+
+		return
+	
 	# ---------- 仅训练模型（不与环境交互）模式 ----------
 	if config.model_only:
 		# 使用离线数据训练世界模型（model-only）
@@ -276,7 +355,10 @@ def main(config):
 			}
 			torch.save(items_to_save, logdir / "latest.pt")
 			# TODO: 可加入类似 model_only 中的 save_every 逻辑
-
+			if agent._step % config.save_every == 0:
+				save_name = f"model_{agent._step}.pt"
+				torch.save(items_to_save, logdir / save_name)
+				print(f"Saved checkpoint to {logdir / save_name}")
 	# 训练结束后，尝试关闭环境（防止资源泄露）
 	try:
 		train_envs.close()
@@ -307,6 +389,15 @@ if __name__ == "__main__":
 		default="My-Isaac-Ur3-PipeRelCamFinal-Ik-RL-Direct-v0",
 		help="Name of the task."
 	)
+	parser.add_argument("--collect_only", action="store_true", default=True)
+	parser.add_argument("--collect_dir", type=str, default="latent_safety/log/dreamerv3/collect_data")
+	parser.add_argument("--collect_steps", type=int, default=0)
+	parser.add_argument("--collect_episodes", type=int, default=20)
+	parser.add_argument("--collect_save_success", action="store_true", default=False)
+	parser.add_argument("--collect_success_key", type=str, default="success")
+	parser.add_argument("--world_model_only", action="store_true", default=False)
+	parser.add_argument("--load_wm_optim", action="store_true", default=False)  # 可选：是否加载WM优化器状态
+
 	# 另一种任务难度的默认值示例（当前注释掉）
 	# parser.add_argument("--task", type=str, default="Isaac-Takeoff-Hard-Franka-IK-Rel-v0", help="Name of the task.")
 
@@ -314,10 +405,17 @@ if __name__ == "__main__":
 	args, remaining = parser.parse_known_args()
 	args.headless = True
 	# 从 configs.yaml 中加载所有配置（如 defaults / specific config 名）
-	configs = yaml.safe_load(
-		(pathlib.Path(sys.argv[0]).parent / "../dreamerv3_torch/configs.yaml").read_text()
+	import pathlib
+	import ruamel.yaml as yamlf
+
+	# 1. 初始化一个 YAML 解析器实例 (指定 typ='safe' 来替代原来的 safe_load)
+	yaml_parser = yaml.YAML(typ='safe', pure=True)
+
+	# 2. 使用解析器的 .load() 方法
+	configs = yaml_parser.load(
+		(pathlib.Path(__file__).parent / "../dreamerv3_torch/configs.yaml").read_text()
 	)
-	
+
 	# 递归更新字典，用于将多个配置块叠加
 	def recursive_update(base, update):
 		for key, value in update.items():

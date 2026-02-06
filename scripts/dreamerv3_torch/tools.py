@@ -333,11 +333,11 @@ def simulate(
 	return (step - steps, episode - episodes, done, length, obs, agent_state, reward)
 
 def linear_to_srgb(x: np.ndarray) -> np.ndarray:
-    """IEC 61966-2-1: linear RGB -> sRGB"""
-    x = np.clip(x, 0.0, 1.0)
-    a = 0.055
-    # piecewise
-    return np.where(x <= 0.0031308, x * 12.92, (1.0 + a) * np.power(x, 1.0 / 2.4) - a)
+	"""IEC 61966-2-1: linear RGB -> sRGB"""
+	x = np.clip(x, 0.0, 1.0)
+	a = 0.055
+	# piecewise
+	return np.where(x <= 0.0031308, x * 12.92, (1.0 + a) * np.power(x, 1.0 / 2.4) - a)
 
 import datetime
 import uuid
@@ -382,7 +382,7 @@ def simulate_vecenv(
 			t["failure"] = 0.0
 			add_to_cache(cache, id_bank[i], t)  # 使用子环境的ID作为键
 
-	# 主循环
+		# 主循环
 	while ((steps and step < steps) or (episodes and episode < episodes)):
 
 		step_info = f"{step + 1}/{steps}" if steps is not None else f"{step + 1} (没有上限)"
@@ -390,41 +390,37 @@ def simulate_vecenv(
 		print(f"当前步骤: {step_info} (步长: {length}) | 当前回合: {episode_info}", end="\r", flush=True)
 
 		# 智能体执行一步
-		# obs 形状是 (num_env, ...) 
-		# done 形状是 (num_env,)
-		# 如果智能体需要批量字典输入，转换obs为字典
 		obs_dict = obs
-
 		action, agent_state = agent(obs_dict, done, agent_state)
 
+		# if "disagreement" in action:
+		# 	dis = action["disagreement"]           # torch tensor
+		# 	dis_mean = dis.mean().item()
+		# 	dis_max  = dis.max().item()
+		# 	print("eval disagreement mean/max:", dis_mean, dis_max)
+			
 		# 执行一次环境的step操作，处理整个批次
 		next_obs, next_reward, next_done, info = vecenv.step(action)
-		
-		# 返回值的形状:
-		#   next_obs:   (num_env, ...)
-		#   next_reward:(num_env,)
-		#   next_done:  (num_env,)
 
 		next_done = next_done.cpu().numpy()
 
 		# 更新计数器
-		episode += int(next_done.sum())   # 计算这一轮完成的子环境数
-		length += 1                       # 增加所有进行中的回合的长度
-		step += num_env                   # 每个子环境进行了一步
-		length *= (1 - next_done)         # 重置已完成的子环境的步长
+		episode += int(next_done.sum())
+		length += 1
+		step += num_env
+		length *= (1 - next_done)
 
 		# 将转移数据添加到缓存中
 		for i in range(num_env):
 
 			transition = {key: value[i].detach().cpu().numpy() for key, value in next_obs.items()}
 
-			# 处理缺失的最后一个观察值（在向量化环境中）
 			if next_done[i]:
-				overwrite_keys = ["image", "policy"]
+				# overwrite_keys = ["image", "policy"]
+				overwrite_keys = ["policy"]
 				for key in overwrite_keys:
 					transition[key] = obs[key][i].detach().cpu().numpy()
 
-			# 添加动作
 			if isinstance(action, dict):
 				for k, v in action.items():
 					transition[k] = v[i].cpu().numpy()
@@ -434,14 +430,14 @@ def simulate_vecenv(
 			transition["reward"] = next_reward[i].item()
 			transition["discount"] = np.array(1.0, dtype=np.float32)
 
-			# # 标记失败的过渡
-			# if transition["reward"] < -0.2:
-			#     transition["failure"] = 1.0 
-			#     cache[id_bank[i]]["failure"][-3:] = [convert(1.0) for _ in range(len(cache[id_bank[i]]["failure"][-3:]))]
-			# else:
-			#     transition["failure"] = 0.0
-			# cache对应于train_eps，python是对象引用，所以这里修改cache也会更新train_eps中的数据
 			add_to_cache(cache, id_bank[i], transition)
+
+			try:
+				print(transition['disagreement'])
+				if transition['disagreement'] is not None:
+					print("High disagreement detected during simulation:", transition['disagreement'])
+			except:
+				pass
 
 		# 记录已完成的子环境数据
 		done_indices = np.where(next_done)[0]
@@ -451,30 +447,21 @@ def simulate_vecenv(
 				index = id_bank[i]
 				length = len(cache[index]["reward"]) - 1
 				score = float(np.array(cache[index]["reward"]).sum())
-				video_front = cache[index]["image"]
+				# video_front = cache[index]["image"]
 				failure_data = cache[index]["failure"]
-				video = video_front
+				# video = video_front
 
-				# 保存录制的视频
-				if save_success and next_reward[i].item() > 0.6:
-					filename = "success_" + index
-					save_episodes(directory, {filename: cache[index]})
-					save_video(directory, filename, video, failure_data)
-				elif save_success and next_reward[i].item() < -0.2:
-					filename = "failure_" + index
-					save_episodes(directory, {filename: cache[index]})
-					save_video(directory, filename, video, failure_data)
+				# 记录环境的奖励和指标日志
+				log_data = info['log']  # 提取每个环境的log信息
+				for key, value in log_data.items():
+					# 将每个奖励和指标项记录到日志
+					logger.scalar(key, float(value.item()))  # 记录标量数据
 
-				# 记录环境相关的信息
-				for key in list(cache[index].keys()):
-					if "log_" in key:
-						logger.scalar(key, float(np.array(cache[index][key]).sum()))
-						cache[index].pop(key)
-
+				# 如果不是评估模式，记录训练数据
 				if not is_eval:
 					step_in_dataset = erase_over_episodes(cache, limit)
 					logger.scalar(f"数据集大小", step_in_dataset)
-					logger.scalar(f"训练返回", score)  ## score是回合的总奖励
+					logger.scalar(f"训练返回", score)
 					logger.scalar(f"训练步长", length)
 					logger.scalar(f"训练回合", len(cache))
 					logger.write(step=logger.step)
@@ -488,7 +475,7 @@ def simulate_vecenv(
 
 					score = sum(eval_scores) / len(eval_scores)
 					length = sum(eval_lengths) / len(eval_lengths)
-					logger.video(f"评估策略", np.array(video)[None])
+					# logger.video(f"评估策略", np.array(video)[None])
 
 					if len(eval_scores) >= episodes and not eval_done:
 						logger.scalar(f"评估返回", score)
@@ -497,7 +484,7 @@ def simulate_vecenv(
 						logger.write(step=logger.step)
 						eval_done = True
 
-				# 将ID更改为新的ID
+				# 更新ID
 				id_bank[i] = str(uuid.uuid4())
 
 		# 继续执行
@@ -511,6 +498,213 @@ def simulate_vecenv(
 			cache.popitem(last=False)
 
 	return (step - steps, episode - episodes, done, length, obs, agent_state, reward)
+
+def _stack_sequence(seq):
+    """
+    seq: list of scalars/ndarrays
+    Return a numeric ndarray (avoid dtype=object) so np.load works normally.
+    """
+    arr = np.array(seq)
+    if arr.dtype == object:
+        arr = np.stack(seq, axis=0)
+    return arr
+
+
+def save_episode_npz(cache, episode_id, directory, suffix_int=None):
+    """
+    Save cache[episode_id] (dict of lists) to a .npz episode file.
+
+    IMPORTANT:
+    - Adds numeric suffix to filename to be compatible with your count_steps()
+      which parses the trailing "-000010.npz" integer.
+    """
+    ep = cache[episode_id]
+    out = {k: _stack_sequence(v) for k, v in ep.items()}
+
+    # Consistency check: all keys must have same time length as reward
+    if "reward" not in out:
+        raise KeyError("Episode has no 'reward' key; cannot save.")
+    T = len(out["reward"])
+    for k, v in out.items():
+        if len(v) != T:
+            raise ValueError(f"Episode length mismatch: key={k}, len={len(v)}, reward_len={T}")
+
+    os.makedirs(directory, exist_ok=True)
+    if suffix_int is None:
+        fname = f"{episode_id}.npz"
+    else:
+        fname = f"{episode_id}-{int(suffix_int):06d}.npz"  # compatible with count_steps()
+    path = os.path.join(str(directory), fname)
+    np.savez_compressed(path, **out)
+    return path
+
+
+def _extract_success(info, env_i, success_key):
+    """
+    Robustly extract success flag for env_i from vectorized env info.
+    Returns float in [0,1] if found, else None.
+    """
+    try:
+        # Case 1: info is list/tuple of per-env dicts
+        if isinstance(info, (list, tuple)):
+            log = info[env_i].get("log", {})
+            v = log.get(success_key, None)
+        else:
+            # Case 2: info is a dict; log fields may be vectors
+            log = info.get("log", {})
+            v = log.get(success_key, None)
+            if v is not None and hasattr(v, "__len__") and not isinstance(v, (str, bytes)):
+                v = v[env_i]
+
+        if v is None:
+            return None
+        return float(v.item()) if hasattr(v, "item") else float(v)
+    except Exception:
+        return None
+
+
+def collect_vecenv(
+    agent,                # Dreamer/Agent callable
+    vecenv,               # vectorized env
+    cache,                # OrderedDict/dict storing ongoing episodes (via add_to_cache)
+    directory,            # where to save *.npz
+    logger=None,
+    steps=0,              # total transitions across all envs (same convention as your simulate_vecenv)
+    episodes=0,           # total episodes (across all envs)
+    state=None,
+    save_success=False,   # only save success episodes if True
+    success_key="success" # key inside info['log'] (adjust to your env)
+):
+    os.makedirs(directory, exist_ok=True)
+
+    num_env = vecenv.num_envs
+    id_bank = [str(uuid.uuid4()) for _ in range(num_env)]
+
+    if state is None:
+        step, episode = 0, 0
+        done = np.ones(num_env, bool)
+        length = np.zeros(num_env, np.int32)
+        obs = None
+        agent_state = None
+        reward = np.zeros(num_env, dtype=np.float32)
+    else:
+        step, episode, done, length, obs, agent_state, reward = state
+
+    # reset and write initial transition t=0 for each env
+    if obs is None:
+        obs = vecenv.reset()
+        for i in range(num_env):
+            t0 = {k: obs[k][i].detach().cpu().numpy() for k in obs.keys()}
+            t0["reward"] = np.array(0.0, np.float32)
+            t0["discount"] = np.array(1.0, np.float32)
+            t0["failure"] = np.array(0.0, np.float32)
+            add_to_cache(cache, id_bank[i], t0)
+
+    # pure inference policy wrapper (no training)
+    def policy(obs_dict, done_flag, agent_state_):
+        with torch.no_grad():
+            try:
+                return agent(obs_dict, done_flag, agent_state_, training=False)
+            except TypeError:
+                # fallback for older signatures
+                try:
+                    agent.eval()
+                except Exception:
+                    pass
+                return agent(obs_dict, done_flag, agent_state_)
+
+    while ((steps and step < steps) or (episodes and episode < episodes)):
+        action, agent_state = policy(obs, done, agent_state)
+
+        next_obs, next_reward, next_done, info = vecenv.step(action)
+        if hasattr(next_done, "cpu"):
+            next_done = next_done.cpu().numpy()
+        else:
+            next_done = np.asarray(next_done)
+
+        # counters (keep consistent with your original simulate_vecenv)
+        episode += int(next_done.sum())
+        length += 1
+        step += num_env
+        length *= (1 - next_done)
+
+        # add transitions
+        for i in range(num_env):
+            transition = {k: next_obs[k][i].detach().cpu().numpy() for k in next_obs.keys()}
+
+            # If done, optionally overwrite some keys using previous obs (as you did for policy)
+            if next_done[i]:
+                overwrite_keys = ["policy"]
+                for k in overwrite_keys:
+                    if k in obs:
+                        transition[k] = obs[k][i].detach().cpu().numpy()
+
+            # store action fields
+            if isinstance(action, dict):
+                for k, v in action.items():
+                    # v may be torch tensor (num_env, ...)
+                    if hasattr(v, "detach"):
+                        transition[k] = v[i].detach().cpu().numpy()
+                    else:
+                        vv = np.asarray(v)
+                        transition[k] = vv[i] if vv.shape[0] == num_env else vv
+            else:
+                # action as tensor/ndarray (num_env, actdim)
+                if hasattr(action, "detach"):
+                    transition["action"] = action[i].detach().cpu().numpy()
+                else:
+                    aa = np.asarray(action)
+                    transition["action"] = aa[i] if aa.shape[0] == num_env else aa
+
+            # reward/discount
+            r_i = next_reward[i].item() if hasattr(next_reward[i], "item") else float(next_reward[i])
+            transition["reward"] = np.array(r_i, np.float32)
+            transition["discount"] = np.array(0.0 if next_done[i] else 1.0, np.float32)
+
+            add_to_cache(cache, id_bank[i], transition)
+
+        # done: save and start new episodes
+        done_indices = np.where(next_done)[0]
+        if len(done_indices) > 0:
+            for i in done_indices:
+                eid = id_bank[i]
+
+                should_save = True
+                if save_success:
+                    s = _extract_success(info, i, success_key)
+                    should_save = (s is not None and s > 0.5)
+
+                if should_save:
+                    # suffix_int=step ensures filename ends with "-000123.npz"
+                    save_episode_npz(cache, eid, directory, suffix_int=step)
+
+                # clear old episode from memory
+                cache.pop(eid, None)
+
+                # new episode id
+                id_bank[i] = str(uuid.uuid4())
+
+                # write new initial transition (assumes vecenv auto-resets on done)
+                t0 = {k: next_obs[k][i].detach().cpu().numpy() for k in next_obs.keys()}
+                t0["reward"] = np.array(0.0, np.float32)
+                t0["discount"] = np.array(1.0, np.float32)
+                t0["failure"] = np.array(0.0, np.float32)
+                add_to_cache(cache, id_bank[i], t0)
+
+                if logger is not None:
+                    # optional lightweight logging
+                    try:
+                        # sum rewards excluding the first dummy reward
+                        # (your episode convention uses t0 reward=0)
+                        pass
+                    except Exception:
+                        pass
+
+        obs = next_obs
+        reward = next_reward
+        done = next_done
+
+    return (step - steps, episode - episodes, done, length, obs, agent_state, reward)
 
 def get_uncertainty(wm, ensemble, latent, actions):
 
@@ -1188,6 +1382,7 @@ def save_episodes(directory, episodes):
 			with filename.open("wb") as f2:
 				f2.write(f1.read())
 	return True
+
 
 import cv2
 import imageio

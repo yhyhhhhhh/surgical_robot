@@ -26,7 +26,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     episode_length_s = 4
     decimation = 2  # 5
     action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(5,))
-
+    obs_groups = {"policy": ["policy"]}
     observation_space = 33
     # observation_space = 29
     state_space = 0
@@ -253,15 +253,15 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     # -------------------------
     # 可视化配置：都还是普通 Python 类型
     # -------------------------
-    goal_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
-        prim_path="/World/Visuals/Command/goal_pose"
-    )
-    current_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
-        prim_path="/World/Visuals/Command/body_pose"
-    )
+    # goal_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
+    #     prim_path="/World/Visuals/Command/goal_pose"
+    # )
+    # current_pose_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(
+    #     prim_path="/World/Visuals/Command/body_pose"
+    # )
 
-    goal_pose_visualizer_cfg.markers["frame"].scale = (0.001, 0.001, 0.001)
-    current_pose_visualizer_cfg.markers["frame"].scale = (0.001, 0.001, 0.001)
+    # goal_pose_visualizer_cfg.markers["frame"].scale = (0.001, 0.001, 0.001)
+    # current_pose_visualizer_cfg.markers["frame"].scale = (0.001, 0.001, 0.001)
 
     # -------------------------
     # 指令输出范围：用 math.pi，避免 torch.pi 生成 tensor
@@ -279,16 +279,16 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     debug_vis = False
 
         # 5mm 视觉球
-    range_vis = VisualizationMarkersCfg(
-        prim_path="/Visuals/target_range",
-        markers={
-            "sphere": sim_utils.SphereCfg(
-                radius=0.003,  # 0.005m = 5mm
-                visual_material=sim_utils.GlassMdlCfg(
-                    glass_color=(1.0, 0.2, 0.2),
-                    frosting_roughness=0.1,
-                    thin_walled=True,
-                ),
-            ),
-        },
-    )
+    # range_vis = VisualizationMarkersCfg(
+    #     prim_path="/Visuals/target_range",
+    #     markers={
+    #         "sphere": sim_utils.SphereCfg(
+    #             radius=0.003,  # 0.005m = 5mm
+    #             visual_material=sim_utils.GlassMdlCfg(
+    #                 glass_color=(1.0, 0.2, 0.2),
+    #                 frosting_roughness=0.1,
+    #                 thin_walled=True,
+    #             ),
+    #         ),
+    #     },
+    # )

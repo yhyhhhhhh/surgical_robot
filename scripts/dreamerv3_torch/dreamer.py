@@ -27,6 +27,7 @@ if not _APP_ALREADY_RUNNING:
     # parse the arguments
     # 解析命令行参数
     args_cli, remaining = parser.parse_known_args()
+    args_cli.headless = True  # 强制无头模式运行
 
     # launch omniverse app
     # 启动 Omniverse 仿真应用
@@ -348,10 +349,28 @@ class Dreamer(nn.Module):
                 torch.argmax(action, dim=-1),
                 self._config.num_actions,
             )
+        # ===== 这里：直接算 disagreement（不确定性）=====
+        disagreement = None
+        if self._config.use_ensemble and (self._disag_ensemble is not None):
+            with torch.no_grad():
+                if self._config.disag_action_cond:
+                    inputs = torch.cat([feat.detach(), action.detach()], dim=-1)
+                else:
+                    inputs = feat.detach()
+
+                # 你已有的接口：直接用
+                disagreement = self._disag_ensemble.intrinsic_reward_penn(inputs)
+                # disagreement shape 通常是 [B, 1] 或 [B, ...]（取决于 EnsembleStochasticLinear 的最后一项）
 
         policy_output = {"action": action, "logprob": logprob}
-        state = (latent, action)
+        # if disagreement is not None:
+        #     policy_output["disagreement"] = disagreement
+
+        state = ({k: v.detach() for k, v in latent.items()}, action)
         return policy_output, state
+        # policy_output = {"action": action, "logprob": logprob}
+        # state = (latent, action)
+        # return policy_output, state
 
     def _train(self, data):
         """
@@ -384,6 +403,42 @@ class Dreamer(nn.Module):
                 self._metrics[name] = [value]
             else:
                 self._metrics[name].append(value)
+                
+    def train_world_model_only(self, training=True):
+        """
+        只更新 world model（encoder/dynamics/heads），不更新 task_behavior/expl_behavior。
+        """
+        if not training:
+            return
+
+        data = next(self._dataset)
+
+        # 只跑 world model 的 _train
+        post, context, mets = self._wm._train(data, ensemble=None)
+        met = self._wm.train_uncertainty_only(
+            data,
+            ensemble=self._disag_ensemble,
+        )
+        # 记录 metrics（按你现有写法）
+        self._update_count += 1
+        self._metrics["update_count"] = self._update_count
+        for k, v in mets.items():
+            self._metrics.setdefault(k, []).append(v)
+            
+        # 记录不确定性训练的各项指标
+        for name, value in met.items():
+            if name not in self._metrics.keys():
+                self._metrics[name] = [value]
+            else:
+                self._metrics[name].append(value)
+
+        for name, values in self._metrics.items():
+            self._logger.scalar(name, float(np.mean(values)))
+            self._metrics[name] = []
+        self._logger.write(fps=True, print_cli=False)
+
+        self._step += 1
+        self._logger.step = self._step
 
 
 def count_steps(folder):

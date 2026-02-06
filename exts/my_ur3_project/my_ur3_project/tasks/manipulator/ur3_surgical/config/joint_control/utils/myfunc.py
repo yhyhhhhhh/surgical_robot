@@ -2,7 +2,7 @@ import cv2
 import torch
 from omni.isaac.lab.utils.math import *
 from omni.isaac.lab.utils.dict import *
-import rospy
+
 
 def euclidean_distance(src, tar, reduction='mean'):
     # B, (N), T, D
