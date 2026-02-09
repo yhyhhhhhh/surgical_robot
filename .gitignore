@@ -34,3 +34,10 @@ _isaac_sim*
 _repo
 _build
 .lastformat
+.python.env
+*.json
+*.npz
+
+latent_safety/
+data_episodes/
+data/

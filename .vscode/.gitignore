@@ -8,3 +8,8 @@
 # Ignore all other files
 .python.env
 *.json
+*.npz
+
+latent_safety/
+data_episodes/
+data/

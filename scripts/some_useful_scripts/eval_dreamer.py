@@ -136,7 +136,7 @@ if __name__ == "__main__":
     parser.add_argument("--configs", nargs="+")
     parser.add_argument("--task", type=str, default="My-Isaac-Ur3-PipeRelCamFinal-Ik-RL-Direct-v0")
     parser.add_argument("--model_path", type=str, default="latent_safety/log/dreamerv3/1225/latest.pt")
-
+    # parser.add_argument("--model_path", type=str, default="latent_safety/log/dreamerv3/world_model_only/0208/202025_test/latest.pt")
     parser.add_argument("--eval_episode_num", type=int, default=20)
     parser.add_argument("--envs", type=int, default=1)
     parser.add_argument("--evaldir", type=str, default="latent_safety/log/dreamerv3/1225/004059_test/eval_eps")

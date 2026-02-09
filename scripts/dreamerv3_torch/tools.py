@@ -339,6 +339,71 @@ def linear_to_srgb(x: np.ndarray) -> np.ndarray:
 	# piecewise
 	return np.where(x <= 0.0031308, x * 12.92, (1.0 + a) * np.power(x, 1.0 / 2.4) - a)
 
+def save_as_npz(data, filename="trajectories_test.npz"):
+    # 将 OrderedDict 扁平化处理，方便存储
+    # key 为 UUID，value 为内部的字典
+    save_dict = {key: np.array(value) for key, value in data.items()}
+    np.savez_compressed(filename, **save_dict)
+    print(f"数据已压缩保存至 {filename}")
+
+def save_traj_drop_extra(trajectories, pose_data, filename="trajectories_aligned.npz"):
+    """
+    专门处理：轨迹比 Pose 多 1 条的情况。
+    逻辑：舍弃最后一条轨迹，保留所有 Pose，实现 N 对 N 的保存。
+    """
+    
+    # 1. 获取所有轨迹的 UUID
+    all_uuids = list(trajectories.keys())
+    num_traj = len(all_uuids)
+    
+    # 2. 获取 Pose 的数量
+    # 兼容 Tensor, List, Array
+    num_pose = pose_data.shape[0] if hasattr(pose_data, 'shape') else len(pose_data)
+
+    print(f"数据检查: 轨迹 {num_traj} 条, Pose {num_pose} 个")
+
+    # 3. 严格校验：必须是 轨迹数 = Pose数 + 1
+    if num_traj != num_pose + 1:
+        # 如果相等，说明不需要舍弃，或者逻辑有误
+        if num_traj == num_pose:
+             print("提示：数量相等，不需要舍弃。将按标准模式保存。")
+             uuids_to_save = all_uuids # 全保
+        else:
+            raise ValueError(f"数量不符合预期！期望轨迹比Pose多1，实际：Traj={num_traj}, Pose={num_pose}")
+    else:
+        # --- 核心逻辑：舍弃最后一条轨迹 ---
+        print("-> 检测到多余一条轨迹，正在舍弃最后一条...")
+        uuids_to_save = all_uuids[:-1] 
+
+    # 4. 开始对齐合并
+    save_dict = {}
+    
+    for i, uuid in enumerate(uuids_to_save):
+        # 4.1 获取轨迹内容
+        content = trajectories[uuid]
+        
+        # 4.2 获取 Pose (直接取第 i 个，因为 Pose 没少)
+        raw_pose = pose_data[i]
+        
+        # --- 类型清洗 (Tensor/List -> Numpy) ---
+        if isinstance(raw_pose, torch.Tensor):
+            clean_pose = raw_pose.detach().cpu().numpy()
+        elif isinstance(raw_pose, (list, tuple)):
+            clean_pose = np.array(raw_pose)
+        else:
+            clean_pose = np.array(raw_pose) # numpy or other
+
+        # 4.3 注入 Pose 到字典中
+        content['pose_command'] = clean_pose
+        
+        # 4.4 准备保存
+        save_dict[uuid] = np.array(content)
+
+    # 5. 保存
+    np.savez_compressed(filename, **save_dict)
+    print(f"保存成功！已保存 {len(save_dict)} 组对齐的数据。")
+    print(f"被舍弃的轨迹 UUID: {all_uuids[-1] if num_traj > num_pose else '无'}")
+
 import datetime
 import uuid
 def simulate_vecenv(
@@ -381,7 +446,9 @@ def simulate_vecenv(
 			t["discount"] = 1.0
 			t["failure"] = 0.0
 			add_to_cache(cache, id_bank[i], t)  # 使用子环境的ID作为键
-
+	
+	# 1. 初始化一个空列表
+	pose_buffer = []
 		# 主循环
 	while ((steps and step < steps) or (episodes and episode < episodes)):
 
@@ -438,6 +505,21 @@ def simulate_vecenv(
 					print("High disagreement detected during simulation:", transition['disagreement'])
 			except:
 				pass
+			
+		# === 2) 再生成下一步 policy 用的 obs_policy，并只对 done env 替换 reset 帧 ===
+		obs_policy = next_obs
+		if next_done.any():
+			reset_obs = vecenv.reset(seed=next_done)  # 必须是“只吐缓存/只标记mask”，不能全量reset仿真
+			# 避免影响 obs_step：clone 一份再改
+			obs_policy = {k: (v.clone() if torch.is_tensor(v) else v) for k, v in next_obs.items()}
+			for k, v in obs_policy.items():
+				if torch.is_tensor(v) and k in reset_obs and torch.is_tensor(reset_obs[k]):
+					obs_policy[k][next_done] = reset_obs[k][next_done]
+
+			# reset 帧语义：first=1,last=0,terminal=0（只对 done 的 env）
+			obs_policy["is_first"][next_done] = 1
+			obs_policy["is_last"][next_done] = 0
+			obs_policy["is_terminal"][next_done] = 0
 
 		# 记录已完成的子环境数据
 		done_indices = np.where(next_done)[0]
@@ -450,6 +532,9 @@ def simulate_vecenv(
 				# video_front = cache[index]["image"]
 				failure_data = cache[index]["failure"]
 				# video = video_front
+				pose_tensor = info['pose']['metrics/pose_command']
+				clean_pose = pose_tensor.detach().cpu().numpy()
+				pose_buffer.append(clean_pose)
 
 				# 记录环境的奖励和指标日志
 				log_data = info['log']  # 提取每个环境的log信息
@@ -486,17 +571,38 @@ def simulate_vecenv(
 
 				# 更新ID
 				id_bank[i] = str(uuid.uuid4())
+				# ✅ 立刻往新 id 里插入 reset 起始帧（否则 episode 会从 o1 开始）
+				if reset_obs is not None:
+					first = {k: reset_obs[k][i].detach().cpu().numpy() for k in reset_obs if torch.is_tensor(reset_obs[k])}
+
+					# 强制标记
+					first["is_first"] = np.array(1, dtype=np.int32)
+					first["is_last"] = np.array(0, dtype=np.int32)
+					first["is_terminal"] = np.array(0, dtype=np.int32)
+
+					# reset 步：reward=0，discount=1
+					first["reward"] = np.array(0.0, dtype=np.float32)
+					first["discount"] = np.array(1.0, dtype=np.float32)
+
+					# reset 步：action 填 0（Dreamer 通常在 is_first 时会重置状态，这个 action 不会造成训练问题）
+					if isinstance(action, dict):
+						for k, v in action.items():
+							first[k] = np.zeros_like(v[i].detach().cpu().numpy())
+					else:
+						first["action"] = np.zeros_like(action[i].detach().cpu().numpy())
+
+					add_to_cache(cache, id_bank[i], first)
 
 		# 继续执行
-		obs = next_obs
+		obs = obs_policy
 		reward = next_reward
 		done = next_done
-
+	save_traj_drop_extra(cache, pose_buffer, filename=os.path.join(directory, "trajectories_with_pose.npz"))
 	# 如果是评估模式，保留最小的缓存
 	if is_eval:
 		while len(cache) > 1:
 			cache.popitem(last=False)
-
+	
 	return (step - steps, episode - episodes, done, length, obs, agent_state, reward)
 
 def _stack_sequence(seq):
@@ -1493,7 +1599,7 @@ def load_episodes(directory, limit=None, reverse=True, episodes=None):
 		for filename in reversed(sorted(directory.glob("*.npz"))):
 			try:
 				with filename.open("rb") as f:
-					episode = np.load(f)
+					episode = np.load(f, allow_pickle=True)
 					episode = {k: episode[k] for k in episode.keys()}
 			except Exception as e:
 				print(f"Could not load episode: {e}")

@@ -552,3 +552,125 @@ class ImagBehavior(nn.Module):
 				for s, d in zip(self.value.parameters(), self._slow_value.parameters()):
 					d.data = mix * s.data + (1 - mix) * d.data
 			self._updates += 1
+
+
+
+class BCBehavior(nn.Module):
+	"""
+	Behavior Cloning policy head on top of Dreamer world model features.
+	One-way dependency: world model -> policy (feat.detach()), no gradient back to world model.
+	"""
+	def __init__(self, config, world_model=None):
+		super().__init__()
+		self._use_amp = True if config.precision == 16 else False
+		self._config = config
+		self._world_model = world_model  # optional, not required for BC update
+
+		if config.dyn_discrete:
+			feat_size = config.dyn_stoch * config.dyn_discrete + config.dyn_deter
+		else:
+			feat_size = config.dyn_stoch + config.dyn_deter
+
+		self.actor = networks.MLP(
+			feat_size,
+			(config.num_actions,),
+			config.actor["layers"],
+			config.units,
+			config.act,
+			config.norm,
+			config.actor["dist"],
+			config.actor["std"],
+			config.actor["min_std"],
+			config.actor["max_std"],
+			absmax=1.0,
+			temp=config.actor["temp"],
+			unimix_ratio=config.actor["unimix_ratio"],
+			outscale=config.actor["outscale"],
+			name="Actor",
+		)
+
+		kw = dict(wd=config.weight_decay, opt=config.opt, use_amp=self._use_amp)
+		self._actor_opt = tools.Optimizer(
+			"actor",
+			self.actor.parameters(),
+			config.actor["lr"],
+			config.actor["eps"],
+			config.actor["grad_clip"],
+			**kw,
+		)
+		print(
+			f"Optimizer actor_opt has {sum(p.numel() for p in self.actor.parameters())} variables."
+		)
+
+	def train_bc(self, feat, action, mask=None):
+		"""
+		feat:  posterior feature from world model, e.g. context["feat"]
+			  shape (B,T,F) or (T,B,F) or (N,F)
+		action: dataset action aligned with feat
+			  shape (B,T,A) or (T,B,A) or (N,A) (continuous or onehot)
+		mask: optional weights for valid steps, shape aligned with leading dims of feat/action.
+			  e.g. (B,T) or (T,B). 1=use, 0=ignore.
+		"""
+		action = torch.as_tensor(action, device=self._config.device, dtype=torch.float32)
+		metrics = {}
+
+		# --- detach to enforce one-way dependency (no grad to world model) ---
+		feat = feat.detach()
+
+		# Flatten leading dims for MLP
+		feat_flat = feat.reshape(-1, feat.shape[-1])
+		action_flat = action.reshape(-1, action.shape[-1]) if action.ndim == feat.ndim else action.reshape(-1)
+
+		if mask is not None:
+			mask_flat = mask.reshape(-1).float()
+		else:
+			mask_flat = None
+
+		with tools.RequiresGrad(self.actor):
+			with torch.cuda.amp.autocast(self._use_amp):
+				dist = self.actor(feat_flat)
+
+				# BC NLL loss
+				# - continuous: dist.log_prob(action_flat) -> (N,) or (N,1)
+				# - onehot discrete: action_flat should be onehot with shape (N, A)
+				nll = -dist.log_prob(action_flat)
+				# robust squeeze
+				if nll.ndim > 1:
+					nll = nll.squeeze(-1)
+
+				if mask_flat is not None:
+					# avoid division by 0
+					denom = torch.clamp(mask_flat.sum(), min=1.0)
+					bc_loss = (nll * mask_flat).sum() / denom
+				else:
+					bc_loss = nll.mean()
+
+				# entropy metric (optional)
+				ent = dist.entropy()
+				if ent.ndim > 1:
+					ent = ent.squeeze(-1)
+				actor_entropy = ent.mean()
+
+		# stats
+		metrics["bc_loss"] = to_np(bc_loss)
+		metrics["actor_entropy"] = to_np(actor_entropy)
+
+		# action stats (optional)
+		try:
+			metrics.update(tools.tensorstats(action, "bc_action"))
+		except Exception:
+			pass
+
+		# optimizer step
+		with tools.RequiresGrad(self):
+			metrics.update(self._actor_opt(bc_loss, self.actor.parameters()))
+
+		return metrics
+
+	@torch.no_grad()
+	def policy(self, feat, deterministic=False):
+		"""
+		Inference helper. feat can be (...,F).
+		"""
+		dist = self.actor(feat)
+		return dist.mode() if deterministic else dist.sample()

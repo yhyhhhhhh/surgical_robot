@@ -134,6 +134,7 @@ class Dreamer(nn.Module):
         # Imaginary rollout based behavior for task optimization
         # 基于“想象轨迹”（latent rollout）的任务行为（策略优化）
         self._task_behavior = models.ImagBehavior(config, self._wm)
+        # self._task_behavior = models.BCBehavior(config, self._wm)
 
         # 如果配置允许且不是 Windows，使用 torch.compile 对网络进行编译优化
         if (
@@ -391,6 +392,9 @@ class Dreamer(nn.Module):
 
         # 训练任务行为（策略和价值网络等），返回的最后一个元素是指标
         metrics.update(self._task_behavior._train(start, reward)[-1])
+        # 训练BC策略
+        # bc_mets = self._task_behavior.train_bc(context["feat"], data["action"])
+        # metrics.update(bc_mets)
 
         # 如果探索策略不是 greedy，则训练探索行为
         if self._config.expl_behavior != "greedy":

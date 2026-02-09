@@ -1,7 +1,7 @@
 defaults:
 
   model_only: False
-  model_path: "latent_safety/log/dreamerv3/1225/latest.pt"
+  model_path: False # "latent_safety/log/dreamerv3/1225/latest.pt"
   use_ensemble: True  # True
   use_unit_ensemble: False 
   use_nf: False
@@ -9,11 +9,11 @@ defaults:
   logdir: 'latent_safety/log/dreamerv3/world_model_only'
   traindir: null
   evaldir: null
-  offline_traindir: ['/home/yhy/IsaacLabExtensionTemplate/latent_safety/log/dreamerv3/collect_data/']
+  offline_traindir: ['/home/yhy/IsaacLabExtensionTemplate/data_episodes'] #['/home/yhy/IsaacLabExtensionTemplate/latent_safety/log/dreamerv3/collect_data/']
   offline_evaldir: null 
   seed: 0
   deterministic_run: False
-  steps: 1e4
+  steps: 5e4
   parallel: False
   eval_every: 1e4
   eval_episode_num: 1 # 10

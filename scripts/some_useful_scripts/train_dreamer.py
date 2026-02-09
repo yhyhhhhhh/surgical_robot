@@ -279,7 +279,7 @@ def main(config):
 			# 只训练世界模型、编码器等部分
 			agent.train_model_only(training=True)
 			# 如需单独训练不确定性模型，可开启下面这行
-			# agent.train_uncertainty_only(training=True)
+			agent.train_uncertainty_only(training=True)
 
 			# 按 log_every 间隔保存最新模型 latest.pt
 			if ((idx_step + 1) % config.log_every) == 0:
@@ -389,7 +389,7 @@ if __name__ == "__main__":
 		default="My-Isaac-Ur3-PipeRelCamFinal-Ik-RL-Direct-v0",
 		help="Name of the task."
 	)
-	parser.add_argument("--collect_only", action="store_true", default=True)
+	parser.add_argument("--collect_only", action="store_true", default=False)
 	parser.add_argument("--collect_dir", type=str, default="latent_safety/log/dreamerv3/collect_data")
 	parser.add_argument("--collect_steps", type=int, default=0)
 	parser.add_argument("--collect_episodes", type=int, default=20)

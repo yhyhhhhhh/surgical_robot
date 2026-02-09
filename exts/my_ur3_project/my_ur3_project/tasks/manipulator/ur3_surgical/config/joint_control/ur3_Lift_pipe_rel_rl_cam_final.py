@@ -141,6 +141,8 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         self.last_actions = torch.zeros(self.num_envs, 5, device=self.device)
         self.cur_actions  = torch.zeros(self.num_envs, 5, device=self.device)
 
+        self._use_external_pose = False
+        self._external_pose_buffer = None
         # === Live UI monitor (object_lift & gripper_reward) ===
         # self._init_live_monitor(enable=True, history_len=240, env_index=None)  
         # env_index=None -> 取所有 env 的 mean；你也可以传 env_index=0 只看第0个环境
@@ -240,14 +242,59 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         self.scene.filter_collisions(global_prim_paths=[])
 
+    def set_external_command(self, pose_command: torch.Tensor):
+        """
+        接收外部传入的 pose_command，并强制开启'外部数据模式'。
+        
+        Args:
+            pose_command (Tensor): 形状必须是 (Num_Envs, 7)。
+                                   包含所有环境对应的 Pose 目标。
+        """
+        # 1. 格式检查与存储
+        if pose_command.shape[0] != self.num_envs:
+            print(f"⚠️ 警告: 输入 Pose 数量 ({pose_command.shape[0]}) 与环境数 ({self.num_envs}) 不一致！")
+            
+        # 存入 buffer (确保在正确的 device 上)
+        self._external_pose_buffer = pose_command.to(self.device).clone()
+        
+        # 2. 开启标志位
+        self._use_external_pose = True
+        
+        print(f"✅ 已接收外部 Pose Command，模式切换为 [固定轨迹]。")
     # ------------------------------------------------------------------
     # 采样小物体初始位置/姿态（相对鼻腔）
     # ------------------------------------------------------------------
     def _resample_command(self, env_ids: Sequence[int]):
         """
-        在以 (0, -0.29, z) 为圆心、半径 max_r 的圆内随机生成 object 的位置。
+        根据标志位决定：是使用 set_external_command 存下的数据，还是随机生成。
         """
         device = self.device
+        
+        # ====================================================
+        # 分支 A: 标志位为 True -> 使用外部存入的数据
+        # ====================================================
+        if self._use_external_pose and self._external_pose_buffer is not None:
+            # 1. 索引：从大 Buffer 中取出当前需要 Reset 的那几个环境的数据
+            # env_ids 是索引列表，例如 [0, 5]，我们取出第 0 和第 5 行
+            targets = self._external_pose_buffer[env_ids]
+
+            # 2. 解析 (假设格式: pos[3] + rot[4])
+            pos_local = targets[:, :3]
+            rot = targets[:, 3:]
+
+            # 3. 坐标系转换 (局部 -> 世界)
+            # 必须加上环境原点，因为 robot 是在各自的 grid 里跑的
+            pos_w = pos_local + self.scene.env_origins[env_ids]
+
+            # 4. 赋值给 IsaacLab 的 buffer
+            self.pose_command_w[env_ids, :3] = pos_w
+            self.pose_command_w[env_ids, 3:] = rot
+            
+            return  # 【直接返回，不执行下面的随机逻辑】
+
+        # ====================================================
+        # 分支 B: 标志位为 False -> 原有的随机逻辑
+        # ====================================================
         n = len(env_ids)
         max_r = 0.004
         center_x = 0.0
@@ -264,14 +311,13 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         new_pos = torch.stack([x, y, z], dim=1) + self.scene.env_origins[env_ids]
         self.pose_command_w[env_ids, :3] = new_pos
 
-        # 随机绕 z 轴旋转
         theta_rot = torch.rand(n, device=device) * 2.0 * math.pi
         q = torch.stack(
             [
-                torch.cos(theta_rot / 2.0),  # w
+                torch.cos(theta_rot / 2.0),
                 torch.zeros_like(theta_rot),
                 torch.zeros_like(theta_rot),
-                torch.sin(theta_rot / 2.0),  # z
+                torch.sin(theta_rot / 2.0),
             ],
             dim=1,
         )
@@ -432,7 +478,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         init_z = self.scene.rigid_objects["object"].data.default_root_state[:, 2]
         object_lift = torch.clamp(obj_z - init_z, min=0.0)
 
-        lift_success_thr = 0.01  # 你和 reward 里保持一致
+        lift_success_thr = 0.009  # 你和 reward 里保持一致
         success = (object_lift > lift_success_thr)
 
         self.terminated = success
@@ -609,7 +655,9 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             "metrics/g_yaw": g_yaw.mean(),
             "reward/smooth_pen": smooth_pen.mean(),
             "reward/vel_pen": vel_pen.mean(),
+            
         }
+        self.extras["pose"] = {"metrics/pose_command": self.pose_command_w[0,:],}
         # Log (略，保持你原来的) ...
         return rewards
     # ------------------------------------------------------------------
