@@ -23,13 +23,13 @@ class Ur3ReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1,
         actor_hidden_dims=[256, 128, 64],
         critic_hidden_dims=[256, 128, 64],
-        activation="relu",
+        activation="elu",
     )
     algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
+        value_loss_coef=1.5,
+        use_clipped_value_loss=False,
         clip_param=0.2,
-        entropy_coef=0.5,
+        entropy_coef=0.01,
         num_learning_epochs=8,
         num_mini_batches=8,
         learning_rate=5.0e-4,

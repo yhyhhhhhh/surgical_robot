@@ -1,0 +1,8 @@
+{
+    "action_dim": 5,
+    "action_key_used": "action",
+    "num_episodes": 499,
+    "num_transitions": 16989,
+    "state_dim": 30,
+    "state_key_used": "policy"
+}

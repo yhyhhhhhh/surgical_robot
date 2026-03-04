@@ -71,69 +71,92 @@ def load_and_inspect_traj(filename="trajectories_aligned.npz"):
 
 def main():
     num_envs = 1
-    env_cfg: Ur3LiftNeedleEnvCfg = parse_env_cfg(
+    env_cfg = parse_env_cfg(
         "My-Isaac-Ur3-PipeRelCamFinal-Ik-RL-Direct-v0",
         device=args_cli.device,
         num_envs=num_envs,
     )
 
     env = gym.make("My-Isaac-Ur3-PipeRelCamFinal-Ik-RL-Direct-v0", cfg=env_cfg)
-    data = load_and_inspect_traj('trajectories_with_pose.npz')
+    data = load_and_inspect_traj('/home/yhy/IsaacLabExtensionTemplate/latent_safety/log/dreamerv3/collect_data_ood/random_trajectories_with_pose.npz')
     keys_list = list(data.keys())
-    target_key = keys_list[3]
-    target_value = data[target_key]['pose_command'].copy()
-    pose_command = torch.tensor(target_value, device=env.device).unsqueeze(0).repeat(num_envs, 1)
-    env.env.set_external_command(pose_command)  # 设置第一条轨迹的 pose_command 作为外部命令输入
-    env.reset()
-    print(f"pose_command {pose_command} ")
+    
+    if not keys_list:
+        print("未找到任何轨迹数据！")
+        return
+
     # ---------------------------------------------------------
-    # 关键修改部分：准备动作张量
+    # 辅助函数：加载指定索引的轨迹并重置环境
     # ---------------------------------------------------------
-    # 定义单个机器人的动作 (假设维度是 5)
-    # 比如: [x, y, z, rot_cmd, gripper]
-    raw_actions = data[target_key]['action'] 
-
-    # 2. 转为 GPU Tensor
-    # 形状: (Total_Steps, 5)
-    action_sequence = torch.tensor(raw_actions, dtype=torch.float32, device=env.device)
-
-    # 获取总步数
-    total_steps = action_sequence.shape[0]
-    print(f"[Info] Loaded trajectory with {total_steps} steps.")
-
-    step_idx = 0 # 初始化步数计数器
-
-    while simulation_app.is_running():
-        # --- 边界检查 ---
-        if step_idx >= total_steps:
-            print("轨迹回放结束")
-            break # 或者在这里重置 step_idx = 0 让他循环播放
-
-        # --- 核心修改开始 ---
+    def load_trajectory(idx):
+        target_key = keys_list[idx]
+        target_value = data[target_key]['pose_command'].copy()
         
-        # 1. 取出【当前这一步】的动作
-        # current_action 形状: (5,)
+        # 1. 设置命令并重置环境
+        pose_command = torch.tensor(target_value, device=env.device).unsqueeze(0).repeat(num_envs, 1)
+        env.env.set_external_command(pose_command)
+        env.reset()
+        
+        # 2. 准备该轨迹的动作张量
+        raw_actions = data[target_key]['action'] 
+        action_sequence = torch.tensor(raw_actions, dtype=torch.float32, device=env.device)
+        total_steps = action_sequence.shape[0]
+        
+        print(f"\n[{idx+1}/{len(keys_list)}] 开始播放轨迹: {target_key} | 总步数: {total_steps}")
+        print(f"pose_command: {pose_command}")
+        
+        return action_sequence, total_steps
+
+    # 初始化状态
+    traj_idx = 0  # 当前播放的轨迹索引
+    step_idx = 0  # 当前轨迹播放到的步数
+    
+    # 加载第一条轨迹
+    action_sequence, total_steps = load_trajectory(traj_idx)
+
+    # ---------------------------------------------------------
+    # 仿真主循环
+    # ---------------------------------------------------------
+    while simulation_app.is_running():
+        
+        # --- 边界检查与循环切换逻辑 ---
+        if step_idx >= total_steps:
+            print(f"--- 轨迹 {keys_list[traj_idx]} 回放结束 ---")
+            
+            # 索引 +1，如果超出了 keys_list 长度，则取余回到 0 (实现无限循环)
+            traj_idx = (traj_idx + 1) % len(keys_list)
+            
+            if traj_idx == 0:
+                print(">>> 所有轨迹已播放完毕，开启新一轮循环！ <<<")
+            
+            # 加载新一条轨迹，重置步数计数器
+            action_sequence, total_steps = load_trajectory(traj_idx)
+            step_idx = 0
+            
+            # continue 跳过这一帧的其余逻辑，在下一帧直接应用新环境的第一步动作
+            continue 
+
+        # --- 核心动作提取与执行 ---
+        # 1. 取出【当前这一步】的动作: (5,)
         current_action = action_sequence[step_idx]
 
-        # 2. 扩展维度: (5,) -> (1, 5)
-        current_action = current_action.unsqueeze(0)
-
-        # 3. 广播给所有环境: (1, 5) -> (num_envs, 5)
-        # 让所有环境在这一帧都执行相同的动作
-        actions = current_action.repeat(num_envs, 1)
+        # 2. 扩展维度并广播给所有环境: (5,) -> (1, 5) -> (num_envs, 5)
+        actions = current_action.unsqueeze(0).repeat(num_envs, 1)
         
-        # --- 核心修改结束 ---
-
-        # 4. 执行环境步
+        # 3. 执行环境步
         ret = env.step(actions)
         
-        # 5. 步数 +1，准备读取下一帧动作
+        # 4. 步数 +1
         step_idx += 1
+        
+        # 5. 可选：打印信息
         object_pos = env.env._object.data.body_pos_w[:, 0, :3]
-        print(f"object_pos {object_pos} ")
+        # 避免输出刷屏太快，可以降低打印频率，例如：
+        # if step_idx % 10 == 0:
+        #     print(f"Step {step_idx}: object_pos {object_pos}")
+
     env.close()
 
 if __name__ == "__main__":
-
     main()
     simulation_app.close()

@@ -37,7 +37,9 @@ _build
 .python.env
 *.json
 *.npz
+*.ckpt
 
 latent_safety/
 data_episodes/
 data/
+checkpoints/

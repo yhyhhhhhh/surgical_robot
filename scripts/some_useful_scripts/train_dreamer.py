@@ -191,8 +191,6 @@ def main(config):
 
 	# ---------- collect-only mode ----------
 	if getattr(config, "collect_only", False):
-		if not config.model_path:
-			raise ValueError("collect_only requires --model_path to load a trained checkpoint.")
 
 		# decide collection directory
 		if config.collect_dir:
@@ -215,6 +213,10 @@ def main(config):
 			action = 2.0 * torch.rand((config.envs, act_dim), device=config.device) - 1.0  # [-1, 1]
 			return {"action": action}, None
 		
+		policy_path = "/home/yhy/log/2026-03-01_20-18-40/exported/policy.pt"
+		policy = torch.jit.load(policy_path, map_location=config.device)
+		policy.eval()
+
 		# IMPORTANT: use fresh in-memory cache; do NOT reuse train_eps dict loaded from disk
 		collect_cache = collections.OrderedDict()
 
@@ -223,7 +225,7 @@ def main(config):
 
 		# Use tools.collect_vecenv to rollout and save .npz
 		tools.collect_vecenv(
-			agent=random_agent,
+			agent=policy,
 			vecenv=train_envs,
 			cache=collect_cache,
 			directory=collect_ood_dir,
@@ -277,9 +279,9 @@ def main(config):
 			leave=False
 		):
 			# 只训练世界模型、编码器等部分
-			agent.train_model_only(training=True)
+			agent.train_world_model_only(training=True)
 			# 如需单独训练不确定性模型，可开启下面这行
-			agent.train_uncertainty_only(training=True)
+			# agent.train_uncertainty_only(training=True)
 
 			# 按 log_every 间隔保存最新模型 latest.pt
 			if ((idx_step + 1) % config.log_every) == 0:
@@ -295,7 +297,9 @@ def main(config):
 					"agent_state_dict": agent.state_dict(),
 					"optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
 				}
-				torch.save(items_to_save, logdir / "model_{:04d}".format(idx_step + 1))
+
+				torch.save(items_to_save, logdir / f"model_{idx_step + 1:04d}.pt")
+
 			
 	else:
 		# ---------- 在线训练模式：交替评估 + 训练 ----------
@@ -392,7 +396,7 @@ if __name__ == "__main__":
 	parser.add_argument("--collect_only", action="store_true", default=False)
 	parser.add_argument("--collect_dir", type=str, default="latent_safety/log/dreamerv3/collect_data")
 	parser.add_argument("--collect_steps", type=int, default=0)
-	parser.add_argument("--collect_episodes", type=int, default=20)
+	parser.add_argument("--collect_episodes", type=int, default=500)
 	parser.add_argument("--collect_save_success", action="store_true", default=False)
 	parser.add_argument("--collect_success_key", type=str, default="success")
 	parser.add_argument("--world_model_only", action="store_true", default=False)

@@ -1,6 +1,6 @@
 defaults:
 
-  model_only: False
+  model_only: True
   model_path: False # "latent_safety/log/dreamerv3/1225/latest.pt"
   use_ensemble: True  # True
   use_unit_ensemble: False 
@@ -9,7 +9,8 @@ defaults:
   logdir: 'latent_safety/log/dreamerv3/world_model_only'
   traindir: null
   evaldir: null
-  offline_traindir: ['/home/yhy/IsaacLabExtensionTemplate/data_episodes'] #['/home/yhy/IsaacLabExtensionTemplate/latent_safety/log/dreamerv3/collect_data/']
+  offline_traindir: ['/home/yhy/IsaacLabExtensionTemplate/expert_data_episodes'] #['/home/yhy/IsaacLabExtensionTemplate/latent_safety/log/dreamerv3/collect_data/']
+  # offline_traindir: null
   offline_evaldir: null 
   seed: 0
   deterministic_run: False
@@ -18,7 +19,7 @@ defaults:
   eval_every: 1e4
   eval_episode_num: 1 # 10
   log_every: 1e4
-  save_every: 5e4
+  save_every: 1e4
   reset_every: 0
   device: 'cuda'
   compile: True

@@ -478,7 +478,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         init_z = self.scene.rigid_objects["object"].data.default_root_state[:, 2]
         object_lift = torch.clamp(obj_z - init_z, min=0.0)
 
-        lift_success_thr = 0.009  # 你和 reward 里保持一致
+        lift_success_thr = 0.005  # 你和 reward 里保持一致
         success = (object_lift > lift_success_thr)
 
         self.terminated = success

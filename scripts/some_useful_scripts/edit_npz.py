@@ -4,11 +4,11 @@ import os
 
 # ================= 配置区域 =================
 # 1. 输入文件路径 (你原来的大文件)
-source_file = '/home/yhy/IsaacLabExtensionTemplate/trajectories_reisfirst.npz'
+source_file = '/home/yhy/IsaacLabExtensionTemplate/latent_safety/log/dreamerv3/collect_data_ood/random_trajectories_with_pose.npz'
 
 # 2. 输出文件夹路径 (会自动创建)
 # 建议放在一个新的子文件夹里，否则你的目录下会瞬间多出500个文件
-output_dir = '/home/yhy/IsaacLabExtensionTemplate/data_episodes'
+output_dir = '/home/yhy/IsaacLabExtensionTemplate/expert_data_episodes'
 # ===========================================
 
 def convert_and_save():
@@ -48,7 +48,10 @@ def convert_and_save():
                 # 兜底：获取字典里任意一个 value 的长度
                 first_key = next(iter(episode))
                 length = len(episode[first_key])
-
+            # 安全删除 'pose_command'，如果不存在也不会报错 (None)
+            if 'pose_command' in episode:
+                # print(f"正在移除 {uuid} 的 pose_command...") # 调试用，嫌吵可以注释掉
+                del episode['pose_command']
             # 4. 构建文件名: {UUID}-{Length}.npz
             # 例如: dbfe1749...-1000.npz
             save_name = f"{uuid}-{length}.npz"
