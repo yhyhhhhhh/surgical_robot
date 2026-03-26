@@ -38,8 +38,9 @@ _build
 *.json
 *.npz
 *.ckpt
-
+*.pt
 latent_safety/
 data_episodes/
 data/
 checkpoints/
+model/
