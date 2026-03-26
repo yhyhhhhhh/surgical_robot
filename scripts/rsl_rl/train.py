@@ -79,7 +79,7 @@ from omni.isaac.lab_tasks.utils.hydra import hydra_task_config
 from omni.isaac.lab_tasks.utils.wrappers.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 import omni.log
 # Import extensions to set up environment tasks
-import my_ur3_project.tasks  # noqa: F401
+import ur3_lite
 from omni.isaac.core.utils.extensions import enable_extension
 enable_extension("omni.isaac.debug_draw")
 import omni.isaac.debug_draw._debug_draw as omni_debug_draw

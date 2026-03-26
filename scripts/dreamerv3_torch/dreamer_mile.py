@@ -27,7 +27,7 @@ if not _APP_ALREADY_RUNNING:
     # parse the arguments
     # 解析命令行参数
     args_cli, remaining = parser.parse_known_args()
-    args_cli.headless = False  # 强制无头模式运行
+    args_cli.headless = True  # 强制无头模式运行
 
     # launch omniverse app
     # 启动 Omniverse 仿真应用
@@ -70,7 +70,7 @@ sys.path.append('latent_safety')  # 添加自定义 latent_safety 模块路径
 
 from dreamer_wrapper import DreamerVecEnvWrapper
 import dreamerv3_torch.exploration as expl
-import dreamerv3_torch.models as models
+import dreamerv3_torch.models_mile as models
 import dreamerv3_torch.tools as tools
 import dreamerv3_torch.uncertainty as uncertainty
 import envs.wrappers as wrappers
@@ -78,19 +78,19 @@ import envs.wrappers as wrappers
 import torch
 from torch import nn
 from torch import distributions as torchd
-import ur3_lite
+
 # 将 Tensor 转为 NumPy 数组的辅助函数
 to_np = lambda x: x.detach().cpu().numpy()
 
 
-class Dreamer(nn.Module):
+class DreamerMile(nn.Module):
     """
     Dreamer 算法主类，封装世界模型、策略行为、探索行为及训练逻辑。
     Main Dreamer class that encapsulates world model, task behavior,
     exploration behavior, and training logic.
     """
     def __init__(self, obs_space, act_space, config, logger, dataset):
-        super(Dreamer, self).__init__()
+        super(DreamerMile, self).__init__()
         self._config = config
         self._logger = logger
 
@@ -129,32 +129,16 @@ class Dreamer(nn.Module):
 
         # World model 包含编码器、动力学模型以及各种预测 head（reward 等）
         # World model that learns latent dynamics and predicts reward, etc.
-        self._wm = models.WorldModel(obs_space, act_space, self._step, config)
+        self._wm = models.WorldModelMile(obs_space, act_space, self._step, config)
 
         # Imaginary rollout based behavior for task optimization
         # 基于“想象轨迹”（latent rollout）的任务行为（策略优化）
-        self._task_behavior = models.ImagBehavior(config, self._wm)
-        # self._task_behavior = models.BCBehavior(config, self._wm)
 
         # 如果配置允许且不是 Windows，使用 torch.compile 对网络进行编译优化
         if (
             config.compile and os.name != "nt"
         ):  # compilation is not supported on windows
             self._wm = torch.compile(self._wm)
-            self._task_behavior = torch.compile(self._task_behavior)
-
-        # reward 函数：在 latent 特征空间上预测 reward 的均值
-        reward = lambda f, s, a: self._wm.heads["reward"](f).mean()
-
-        # Exploration behavior selector
-        # 构造探索行为，根据 config.expl_behavior 选择具体策略
-        self._expl_behavior = dict(
-            greedy=lambda: self._task_behavior,                     # 贪心：直接使用任务策略
-            random=lambda: expl.Random(config, act_space),          # 随机策略
-            plan2explore=lambda: expl.Plan2Explore(                 # Plan2Explore 探索策略
-                config, self._wm, reward
-            ),
-        )[config.expl_behavior]().to(self._config.device)
 
         # 如果使用 ensemble，不确定性模型使用 OneStepPredictor
         if config.use_ensemble:
@@ -162,35 +146,86 @@ class Dreamer(nn.Module):
         else:
             self._disag_ensemble = None
 
+    # def __call__(self, obs, reset, state=None, training=True):
+    #     """
+    #     主调用接口：在与环境交互时被调用。
+    #     Main call: called during environment interaction.
+    #     - 进行必要的训练步骤
+    #     - 输出当前策略给出的动作
+    #     """
+    #     step = self._step
+    #     if training:
+    #         # 决定本次要执行多少次训练迭代（预训练或正常训练）
+    #         # 先预训练一次，
+    #         steps = (
+    #             self._config.pretrain
+    #             if self._should_pretrain()
+    #             else self._should_train(step)
+    #         )
+    #         # 执行训练步骤
+    #         for _ in range(steps):
+    #             self._train(next(self._dataset))   # dataset是train_eps的一个包装器，从train_eps的数据中采样，所以train_eps更新后dataset也会更新
+    #             self._update_count += 1
+    #             self._metrics["update_count"] = self._update_count
+
+    #         # 达到日志记录周期则写入日志与视频
+    #         if self._should_log(step):
+    #             # 标量指标写入
+    #             for name, values in self._metrics.items():
+    #                 self._logger.scalar(name, float(np.mean(values)))
+    #                 self._metrics[name] = []
+    #             # 可选的视频预测日志
+    #             if self._config.video_pred_log:
+    #                 if self._config.use_ensemble:
+    #                     video_pred = self._wm.video_pred(
+    #                         next(self._dataset),
+    #                         ensemble=self._disag_ensemble,
+    #                     )
+    #                     self._logger.video("train_openl", video_pred)
+    #                 else:
+    #                     openl = self._wm.video_pred(next(self._dataset))
+    #                     self._logger.video("train_openl", to_np(openl))
+    #             # 写入日志（包含 FPS 等）
+    #             self._logger.write(fps=True)
+
+    #     # 根据当前观测和内部状态生成策略输出和新状态
+    #     policy_output, state = self._policy(obs, state, training)
+
+    #     if training:
+    #         # 按环境并行实例数量推进 step 计数
+    #         self._step += len(reset)
+    #         # logger.step 按 action_repeat 还原为环境真实步数
+    #         self._logger.step = self._config.action_repeat * self._step
+
+    #     return policy_output, state
     def __call__(self, obs, reset, state=None, training=True):
         """
-        主调用接口：在与环境交互时被调用。
-        Main call: called during environment interaction.
-        - 进行必要的训练步骤
-        - 输出当前策略给出的动作
+        与环境交互时调用：
+        - 训练模式下先按调度训练 world model
+        - 然后根据当前观测更新 posterior latent state
+        - 再由 policy 输出动作
         """
         step = self._step
+
+        # -------------------------
+        # 1) 训练部分（保持你原来的逻辑）
+        # -------------------------
         if training:
-            # 决定本次要执行多少次训练迭代（预训练或正常训练）
-            # 先预训练一次，
             steps = (
                 self._config.pretrain
                 if self._should_pretrain()
                 else self._should_train(step)
             )
-            # 执行训练步骤
             for _ in range(steps):
-                self._train(next(self._dataset))   # dataset是train_eps的一个包装器，从train_eps的数据中采样，所以train_eps更新后dataset也会更新
+                self._train(next(self._dataset))
                 self._update_count += 1
                 self._metrics["update_count"] = self._update_count
 
-            # 达到日志记录周期则写入日志与视频
             if self._should_log(step):
-                # 标量指标写入
                 for name, values in self._metrics.items():
                     self._logger.scalar(name, float(np.mean(values)))
                     self._metrics[name] = []
-                # 可选的视频预测日志
+
                 if self._config.video_pred_log:
                     if self._config.use_ensemble:
                         video_pred = self._wm.video_pred(
@@ -201,20 +236,94 @@ class Dreamer(nn.Module):
                     else:
                         openl = self._wm.video_pred(next(self._dataset))
                         self._logger.video("train_openl", to_np(openl))
-                # 写入日志（包含 FPS 等）
+
                 self._logger.write(fps=True)
 
-        # 根据当前观测和内部状态生成策略输出和新状态
-        policy_output, state = self._policy(obs, state, training)
+        # -------------------------
+        # 2) 在线动作选择
+        # -------------------------
+        with torch.no_grad():
+            # reset -> is_first
+            reset = torch.tensor(reset, device=self._config.device, dtype=torch.float32)
+            if reset.ndim == 0:
+                reset = reset.unsqueeze(0)
 
+            batch_size = len(reset)
+
+            # 初始化 recurrent state
+            if state is None:
+                state = self._init_policy_state(batch_size)
+
+            # 预处理当前单步观测
+            obs = {
+                k: torch.tensor(v, device=self._config.device, dtype=torch.float32)
+                for k, v in obs.items()
+            }
+            for k in obs.keys():
+                if "cam" in k:
+                    obs[k] = obs[k] / 255.0
+
+            # 给 encoder / obs_step 补 is_first
+            obs["is_first"] = reset
+
+            # 编码当前观测，得到当前时刻 embedding x_t
+            embed = self._wm.encoder(obs)
+
+            # 单步 posterior 更新：
+            # prev_action 用上一步真实执行动作（交互时就是上一时刻 agent 输出的动作）
+            post, prior = self._wm.dynamics.obs_step(
+                prev_state=state["latent"],
+                prev_action=state["action"],
+                embed=embed,
+                is_first=reset,
+                sample=training,   # 训练时可采样；评估时可设 False
+                policy=self._wm.heads["action"],   # policy / action head
+            )
+
+            # 从 posterior latent state 提取 feature
+            feat = self._wm.dynamics.get_feat(post)
+
+            # policy 输出动作分布
+            action_dist = self._wm.heads["action"](feat)
+
+            # 执行动作：
+            # 如果 action head 是分布，这里取 mode() 更稳
+            # 若你想训练时更随机，也可改成 sample()
+            if training and hasattr(action_dist, "sample"):
+                action = action_dist.sample()
+            elif hasattr(action_dist, "mode"):
+                action = action_dist.mode()
+            elif hasattr(action_dist, "mean"):
+                action = action_dist.mean
+            else:
+                # 万一 action head 直接返回 tensor
+                action = action_dist
+            
+            logprob = action_dist.log_prob(action)
+            # 更新 recurrent state，供下一步使用
+            new_state = {
+                "latent": post,
+                "action": action,
+            }
+        policy_output = {"action": action, "logprob": logprob}
+        # -------------------------
+        # 3) step 计数
+        # -------------------------
         if training:
-            # 按环境并行实例数量推进 step 计数
             self._step += len(reset)
-            # logger.step 按 action_repeat 还原为环境真实步数
             self._logger.step = self._config.action_repeat * self._step
 
-        return policy_output, state
-
+        return policy_output, new_state
+        
+    def _init_policy_state(self, batch_size):
+        latent = self._wm.dynamics.initial(batch_size)
+        action = torch.zeros(
+            batch_size,
+            self._config.num_actions,
+            device=self._config.device,
+            dtype=torch.float32,
+        )
+        return {"latent": latent, "action": action}
     def train_model_only(self, training=True):
         """
         仅训练世界模型（不更新策略），通常用于单独预训练世界模型。
@@ -471,7 +580,6 @@ def make_env(config, num_envs):
     创建并包装 Isaac Lab 多环境实例，适配 Dreamer 接口。
     Create and wrap Isaac Lab vectorized environment compatible with Dreamer.
     """
-    import ur3_lite
     # 从任务名解析出环境配置
     env_cfg = parse_env_cfg(
         config.task,

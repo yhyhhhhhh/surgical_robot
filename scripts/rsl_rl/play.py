@@ -7,7 +7,7 @@ parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default="My-Isaac-Ur3-PipeRelCamFinal-Ik-RL-Direct-v0", help="Name of the task.")
+parser.add_argument("--task", type=str, default="Ur3Lite-PipeRelCamFinalGoal-Ik-RL-Direct-v0", help="Name of the task.")
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -32,7 +32,7 @@ from omni.isaac.core.utils.extensions import enable_extension
 import my_ur3_project.tasks  # noqa: F401
 enable_extension("omni.isaac.debug_draw")
 import omni.isaac.debug_draw._debug_draw as omni_debug_draw
-
+import ur3_lite
 def main():
 
     # 1) build env
@@ -46,7 +46,7 @@ def main():
     env = RslRlVecEnvWrapper(env)
 
     # 2) load exported JIT policy
-    jit_path = "/home/yhy/log/2026-03-01_20-18-40/exported/policy.pt"  # 改成你的实际路径
+    jit_path = "/home/yhy/log/2026-03-25_22-49-56/exported/policy.pt"  # 改成你的实际路径
     device = env.unwrapped.device
     print(f"[INFO]: Loading JIT policy from: {jit_path}")
     policy = torch.jit.load(jit_path, map_location=device)
@@ -71,7 +71,7 @@ def main():
             
             # 2. 生成并添加高斯噪声
             # torch.randn_like 生成均值为0，方差为1的标准正态分布张量
-            noise = torch.randn_like(actions) * noise_scale
+            noise = torch.zeros_like(actions) * noise_scale
             noisy_actions = actions + noise
 
             print("Noisy Actions:", noisy_actions)

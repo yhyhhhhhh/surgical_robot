@@ -20,38 +20,53 @@ def clamp_preserve_gradients(x: torch.Tensor, lower: float, upper: float) -> tor
         The clamped tensor.
     """
     return x + (x.clamp(min=lower, max=upper) - x).detach()
+import torch
+import torch.nn as nn
+# 假设存在 tools 模块，通常在 Dreamer 算法库中包含优化器等工具类
 
 class OneStepPredictor(nn.Module):
     def __init__(self, config, world_model):
         super(OneStepPredictor, self).__init__()
+        # 保存传入的配置参数
         self._config = config
+        # 判断是否使用 AMP (自动混合精度) 加速训练，如果配置精度为 16 则是，否则否
         self._use_amp = True if config.precision == 16 else False
+        
+        # 根据世界模型（World Model）是离散动态还是连续动态来计算输入特征的维度大小
         if config.dyn_discrete:
+            # 离散情况：特征大小 = 随机状态类别数 * 离散维度 + 确定性状态维度
             feat_size = config.dyn_stoch * config.dyn_discrete + config.dyn_deter
             stoch = config.dyn_stoch * config.dyn_discrete
         else:
+            # 连续情况：特征大小 = 随机状态维度 + 确定性状态维度
             feat_size = config.dyn_stoch + config.dyn_deter
             stoch = config.dyn_stoch
+            
+        # 根据配置决定预测的目标 (target) 是什么，并设定对应的输出维度
         size = {
-            "embed": world_model.embed_size,
-            "stoch": stoch,
-            "deter": config.dyn_deter,
-            "feat": config.dyn_stoch + config.dyn_deter,
+            "embed": world_model.embed_size, # 预测图像嵌入向量
+            "stoch": stoch,                  # 预测随机状态部分
+            "deter": config.dyn_deter,       # 预测确定性状态部分
+            "feat": config.dyn_stoch + config.dyn_deter, # 预测完整特征
         }[self._config.disag_target]
 
+        # 计算集成网络的输入维度：特征大小 + 动作维度（如果配置了动作条件）
         input_dim = feat_size + (config.num_actions if config.disag_action_cond else 0)
 
+        # 初始化集成随机线性网络（用于估计认知不确定性）
         self._networks = EnsembleStochasticLinear(in_features=input_dim, 
                                                  out_features=size,
                                                  hidden_features=input_dim,
-                                                 ensemble_size=config.disag_models,
-                                                 explore_var='jrd', 
-                                                 residual=True)
+                                                 ensemble_size=config.disag_models, # 集成模型的数量（例如 5 或 10）
+                                                 explore_var='jrd',                 # 探索方差的计算方式
+                                                 residual=True)                     # 使用残差连接
         
-        
+        # 设置损失函数为自定义的高斯负对数似然损失
         self.criterion = self.gaussian_nll_loss 
         
+        # 配置优化器的参数字典
         kw = dict(wd=config.weight_decay, opt=config.opt, use_amp=self._use_amp)
+        # 初始化自定义的优化器工具类
         self._expl_opt = tools.Optimizer(
             "ensemble",
             self._networks.parameters(),
@@ -63,71 +78,91 @@ class OneStepPredictor(nn.Module):
         self.config = config
 
     def gaussian_nll_loss(self, mu, target, var):
-        # Custom Gaussian Negative Log Likelihood Loss
+        # 自定义高斯负对数似然损失 (Gaussian Negative Log Likelihood Loss)
+        # 数学公式: 0.5 * (log(var) + (target - mu)^2 / var)
         loss = 0.5 * (torch.log(var) + (target - mu) ** 2 / var)
-        return torch.mean(loss)
+        return torch.mean(loss) # 返回所有样本损失的均值
     
     def intrinsic_reward_penn(self, inputs):
+        # 计算基于 PENN (Probabilistic Ensemble Neural Network) 的内部奖励
+        self._networks.eval() # 将网络设置为评估模式
 
-        self._networks.eval()
-
+        # 检查输入是否为 3D 张量：(Batch_size, Time_steps, Dimension)
         if len(inputs.shape) == 3:
             N, T, D = inputs.shape
+            # 展平前两个维度以便输入网络：(N*T, D)
             inputs = inputs.reshape(N * T, D)
 
-            with torch.no_grad():
+            with torch.no_grad(): # 计算奖励不需要梯度
                 ensemble_outputs = self._networks(inputs)
-                div = ensemble_outputs[-1]
+                div = ensemble_outputs[-1] # 获取集成输出的最后一项，通常是方差或散度(divergence)
             
+            # 恢复到原来的形状 (N, T, 散度维度)
             div = div.view(N, T, -1)
         else:
+            # 如果是 2D 张量，直接前向传播
             with torch.no_grad():
                 ensemble_outputs = self._networks(inputs)
                 div = ensemble_outputs[-1]
 
+        # 如果配置项要求，对散度取对数处理
         if self._config.disag_log:
-            div = torch.log(div)
+            div = torch.log1p(div)
 
-        return div
+        return div # 返回散度作为内部探索奖励
     
     def train_ensemble_penn_fixed(self, feats, actions, targets, is_first):
-        self._networks.train()
-        with torch.cuda.amp.autocast(self._use_amp):
+        # 训练这个集成网络的方法
+        self._networks.train() # 切换到训练模式
+        with torch.cuda.amp.autocast(self._use_amp): # 开启/关闭自动混合精度
 
-            feats = feats[:, :-1] # N, T-1
-            actions = actions[:, 1:] # N, T-1
-            inputs = torch.concat([feats, actions], -1)
-            targets = targets[:, 1:] # N, T-1
+            # 时间步对齐：用 t 时刻的特征和 t+1 时刻的动作去预测 t+1 时刻的目标
+            feats = feats[:, :-1]   # 去掉最后一个时间步：(N, T-1)
+            actions = actions[:, :-1] # 去掉第一个时间步：(N, T-1)
+            # 拼接特征和动作作为输入
+            inputs = torch.concat([feats, actions], -1) 
+            targets = targets[:, 1:] # 目标为 t+1 时刻的值：(N, T-1)
 
+            # 过滤掉无效的时间步（例如：跨越了回合边界的转移）
+            # 如果 t+1 时刻是新回合的第一步 (is_first==1)，那么 t 到 t+1 的转移是无效的
             valid_idx = torch.roll(is_first, shifts=-1, dims=1)[:, :-1] == 0.
 
+            # 提取有效的输入和目标
             valid_inputs = inputs[valid_idx]
             valid_targets = targets[valid_idx]
 
+            # 分离计算图 (detach)：因为我们不希望训练集成网络时，梯度回传去改变世界模型（World Model）
             valid_inputs = valid_inputs.detach()
             valid_targets = valid_targets.detach()
             
-            train_loss = torch.FloatTensor([0]).cuda()
+            train_loss = torch.zeros(1, device=valid_inputs.device)
             
+            # 遍历集成模型中的每一个独立的网络进行训练
             for i in range(self.config.disag_models):                
+                # 单独前向传播第 i 个模型，获取预测的均值(mu)和对数标准差(log_std)
                 (mu, log_std) = self._networks.single_forward(
                     valid_inputs, index=i)
 
-                yhat_mu = mu.unsqueeze(0)
-                var = torch.square(torch.exp(log_std.unsqueeze(0)))
+                yhat_mu = mu.unsqueeze(0) # 增加一个维度以匹配目标格式
+                # 计算方差 var = (exp(log_std))^2
+                var = torch.square(torch.exp(log_std.unsqueeze(0))).clamp_min(1e-6)
+                # 计算高斯 NLL 损失
                 loss = self.gaussian_nll_loss(yhat_mu, valid_targets, var)
                 loss = loss.mean()
+                # 使用自定义优化器更新网络参数
                 self._expl_opt(loss, self._networks.parameters())
                 
-                train_loss += loss
+                train_loss += loss # 累加所有模型的损失
 
+        # 记录训练指标：平均每个模型的损失
         metrics = {"ensemble_loss": train_loss.item() / self.config.disag_models}
 
+        # 评估训练后的网络分歧程度（散度），记录在日志中
         with torch.no_grad():
             div = self.intrinsic_reward_penn(valid_inputs).mean()
         metrics["log_disagreement"] = div.cpu().numpy()
 
-        return metrics
+        return metrics # 返回指标字典
     
 class DensityEstimator_MAF(nn.Module):
     def __init__(self, config):

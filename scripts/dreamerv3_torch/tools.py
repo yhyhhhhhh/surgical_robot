@@ -127,7 +127,7 @@ class Logger:
 
         return filename
 
-    def write(self, fps=False, step=False, fps_namespace="", print_cli=True):
+    def write(self, fps=False, step=False, fps_namespace="", print_cli=False):
         if not step:
             step = self.step
         scalars = list(self._scalars.items())
@@ -423,208 +423,210 @@ def save_traj_drop_first_and_last(trajectories, pose_data, filename="trajectorie
     if num_traj >= 2:
         print(f"被舍弃的 UUID: {all_uuids[0]} (首), {all_uuids[-1]} (尾)")
         
+
+def _seq_to_np(seq):
+    arrs = [np.asarray(x) for x in seq]
+    try:
+        return np.stack(arrs, axis=0)
+    except ValueError:
+        return np.array(arrs, dtype=object)
+
+def save_one_episode_npz(ep, save_path):
+    ep_data = {k: _seq_to_np(v) for k, v in ep.items()}
+    np.savez_compressed(save_path, **ep_data)
+
+def save_new_finished_episodes(cache, outdir):
+    os.makedirs(outdir, exist_ok=True)
+
+    for ep_id, ep in cache.items():
+        save_path = os.path.join(outdir, f"{ep_id}.npz")
+
+        # 已经保存过就跳过，避免覆盖
+        if os.path.exists(save_path):
+            continue
+
+        # 只保存完整结束的轨迹
+        is_finished = False
+        if "is_last" in ep and len(ep["is_last"]) > 0:
+            is_finished = is_finished or bool(np.asarray(ep["is_last"][-1]))
+        if "is_terminal" in ep and len(ep["is_terminal"]) > 0:
+            is_finished = is_finished or bool(np.asarray(ep["is_terminal"][-1]))
+
+        if not is_finished:
+            continue
+
+        save_one_episode_npz(ep, save_path)
+        # print(f"[saved] {save_path}")
 import datetime
 import uuid
 def simulate_vecenv(
-	agent,  # 智能体
-	vecenv,  # 一个包含N个子环境的单一向量化环境
-	cache,  # 数据缓存
-	directory,  # 保存数据的目录
-	logger,  # 日志记录器
-	is_eval=False,  # 是否为评估模式
-	limit=None,  # 数据集大小限制
-	steps=0,  # 总步数
-	episodes=0,  # 总回合数
-	state=None,  # 初始化状态
-	save_success=False  # 是否保存成功的轨迹
+    agent,  # 智能体
+    vecenv,  # 一个包含N个子环境的单一向量化环境
+    cache,  # 数据缓存
+    directory,  # 保存数据的目录
+    logger,  # 日志记录器
+    is_eval=False,  # 是否为评估模式
+    limit=None,  # 数据集大小限制
+    steps=0,  # 总步数
+    episodes=0,  # 总回合数
+    state=None,  # 初始化状态
+    save_success=False  # 是否保存成功的轨迹
 ):
-	# 获取向量化环境中的子环境数量
-	num_env = vecenv.num_envs
-	id_bank = [str(uuid.uuid4()) for _ in range(num_env)]  # 为每个子环境生成唯一的ID
 
-	# 解包或初始化仿真状态
-	if state is None:
-		step, episode = 0, 0
-		done = np.ones(num_env, bool)  # 所有子环境的done状态初始化为True
-		length = np.zeros(num_env, np.int32)  # 所有子环境的步长初始化为0
-		obs = None  # 初始化观察为空
-		agent_state = None  # 智能体状态初始化为空
-		reward = np.zeros(num_env, dtype=np.float32)  # 初始化奖励为0
-	else:
-		step, episode, done, length, obs, agent_state, reward = state  # 使用传入的状态
+    num_env = vecenv.num_envs
+    id_bank = [str(uuid.uuid4()) for _ in range(num_env)]  # 为每个子环境生成唯一的ID
 
-	# 如果环境在done时自动重置子环境，初始时只需要进行一次重置
-	if obs is None:
-		# 观察形状可能是 (num_env, obs_dim, ...)
-		obs = vecenv.reset()
+    # 解包或初始化仿真状态
+    if state is None:
+        step, episode = 0, 0
+        done = np.ones(num_env, bool)  
+        length = np.zeros(num_env, np.int32) 
+        obs = None  
+        agent_state = None  
+        reward = np.zeros(num_env, dtype=np.float32) 
+    else:
+        step, episode, done, length, obs, agent_state, reward = state  
 
-		# 如果需要将这些初始状态添加到缓存中
-		for i in range(num_env):
-			t = {key: value[i].detach().cpu() for key, value in obs.items()}
-			t["reward"] = 0.0
-			t["discount"] = 1.0
-			t["failure"] = 0.0
-			add_to_cache(cache, id_bank[i], t)  # 使用子环境的ID作为键
-	
-	# 1. 初始化一个空列表
-	pose_buffer = []
-	pose_buffer.append('Initial placeholder for pose buffer')
+    # 如果环境在done时自动重置子环境，初始时只需要进行一次重置
+    if obs is None:
+        obs = vecenv.reset()
+        for i in range(num_env):
+            t = {key: value[i].detach().cpu() for key, value in obs.items()}
+            t["reward"] = 0.0
+            t["discount"] = 1.0
+            t["failure"] = 0.0
+            add_to_cache(cache, id_bank[i], t)  
+    
+    pose_buffer = []
+    pose_buffer.append('Initial placeholder for pose buffer')
+    while ((steps and step < steps) or (episodes and episode < episodes)):
 
-		# 主循环
-	while ((steps and step < steps) or (episodes and episode < episodes)):
+        # step_info = f"{step + 1}/{steps}" if steps is not None else f"{step + 1} (没有上限)"
+        # episode_info = f"{episode + 1}/{episodes}" if episodes is not None else f"{episode + 1} (没有上限)"
+        # print(f"当前步骤: {step_info} (步长: {length}) | 当前回合: {episode_info}", end="\r", flush=True)
 
-		step_info = f"{step + 1}/{steps}" if steps is not None else f"{step + 1} (没有上限)"
-		episode_info = f"{episode + 1}/{episodes}" if episodes is not None else f"{episode + 1} (没有上限)"
-		print(f"当前步骤: {step_info} (步长: {length}) | 当前回合: {episode_info}", end="\r", flush=True)
+        obs_dict = obs
+        action, agent_state = agent(obs_dict, done, agent_state)
+        next_obs, next_reward, next_done, info = vecenv.step(action)
+        next_done = next_done.cpu().numpy()
+        episode += int(next_done.sum())
+        length += 1
+        step += num_env
+        length *= (1 - next_done)
 
-		# 智能体执行一步
-		obs_dict = obs
-		action, agent_state = agent(obs_dict, done, agent_state)
+        for i in range(num_env):
+            transition = {key: value[i].detach().cpu().numpy() for key, value in next_obs.items()}
+            if next_done[i]:
+                # overwrite_keys = ["image", "policy"]
+                overwrite_keys = ["policy"]
+                for key in overwrite_keys:
+                    transition[key] = obs[key][i].detach().cpu().numpy()
+            if isinstance(action, dict):
+                for k, v in action.items():
+                    transition[k] = v[i].cpu().numpy()
+            else:
+                transition["action"] = np.array(action)
+            transition["reward"] = next_reward[i].item()
+            transition["discount"] = np.array(1.0, dtype=np.float32)
+            add_to_cache(cache, id_bank[i], transition)
 
-		# if "disagreement" in action:
-		# 	dis = action["disagreement"]           # torch tensor
-		# 	dis_mean = dis.mean().item()
-		# 	dis_max  = dis.max().item()
-		# 	print("eval disagreement mean/max:", dis_mean, dis_max)
-			
-		# 执行一次环境的step操作，处理整个批次
-		next_obs, next_reward, next_done, info = vecenv.step(action)
+        # === 2) 再生成下一步 policy 用的 obs_policy，并只对 done env 替换 reset 帧 ===
+        obs_policy = next_obs
+        if next_done.any():
+            reset_obs = vecenv.reset(seed=next_done) 
+            obs_policy = {k: (v.clone() if torch.is_tensor(v) else v) for k, v in next_obs.items()}
+            for k, v in obs_policy.items():
+                if torch.is_tensor(v) and k in reset_obs and torch.is_tensor(reset_obs[k]):
+                    obs_policy[k][next_done] = reset_obs[k][next_done]
+            obs_policy["is_first"][next_done] = 1
+            obs_policy["is_last"][next_done] = 0
+            obs_policy["is_terminal"][next_done] = 0
 
-		next_done = next_done.cpu().numpy()
+        done_indices = np.where(next_done)[0]
+        if len(done_indices) > 0:
+            for i in done_indices:
+                index = id_bank[i]
+                length = len(cache[index]["reward"]) - 1
+                score = float(np.array(cache[index]["reward"]).sum())
+                # video_front = cache[index]["image"]
+                # video = video_front
+                pose_tensor = info['pose']['metrics/pose_command']
+                clean_pose = pose_tensor.detach().cpu().numpy()
+                pose_buffer.append(clean_pose)
 
-		# 更新计数器
-		episode += int(next_done.sum())
-		length += 1
-		step += num_env
-		length *= (1 - next_done)
+                log_data = info['log']
+                for key, value in log_data.items():
+                    logger.scalar(key, float(value.item()))
 
-		# 将转移数据添加到缓存中
-		for i in range(num_env):
+                if not is_eval:
+                    save_new_finished_episodes(cache, "/home/yhy/IsaacLabExtensionTemplate_lite/data/")
+                    logger.scalar(f"训练返回", score)
+                    logger.scalar(f"训练步长", length)
+                    logger.scalar(f"训练回合", len(cache))
+                    logger.scalar("训练/已完成环境步", step)
+                    logger.scalar("训练/已完成回合数", episode)
+                    if steps:
+                        logger.scalar("训练/累计步数进度(%)", 100.0 * float(step) / float(steps))
+                    if episodes:
+                        logger.scalar("训练/累计回合进度(%)", 100.0 * float(episode) / float(episodes))
+                    logger.write(step=logger.step)
+                else:
+                    if not "eval_lengths" in locals():
+                        eval_lengths = []
+                        eval_scores = []
+                        eval_done = False
+                    eval_scores.append(score)
+                    eval_lengths.append(length)
 
-			transition = {key: value[i].detach().cpu().numpy() for key, value in next_obs.items()}
+                    score = sum(eval_scores) / len(eval_scores)
+                    length = sum(eval_lengths) / len(eval_lengths)
+                    # logger.video(f"评估策略", np.array(video)[None])
 
-			if next_done[i]:
-				# overwrite_keys = ["image", "policy"]
-				overwrite_keys = ["policy"]
-				for key in overwrite_keys:
-					transition[key] = obs[key][i].detach().cpu().numpy()
+                    if len(eval_scores) >= episodes and not eval_done:
+                        logger.scalar(f"评估返回", score)
+                        logger.scalar(f"评估步长", length)
+                        logger.scalar(f"评估回合", len(eval_scores))
+                        logger.write(step=logger.step)
+                        eval_done = True
 
-			if isinstance(action, dict):
-				for k, v in action.items():
-					transition[k] = v[i].cpu().numpy()
-			else:
-				transition["action"] = np.array(action)
+                id_bank[i] = str(uuid.uuid4())
+                # ✅ 立刻往新 id 里插入 reset 起始帧（否则 episode 会从 o1 开始）
+                if reset_obs is not None:
+                    first = {k: reset_obs[k][i].detach().cpu().numpy() for k in reset_obs if torch.is_tensor(reset_obs[k])}
+                    first["is_first"] = np.array(1, dtype=np.int32)
+                    first["is_last"] = np.array(0, dtype=np.int32)
+                    first["is_terminal"] = np.array(0, dtype=np.int32)
+                    first["reward"] = np.array(0.0, dtype=np.float32)
+                    first["discount"] = np.array(1.0, dtype=np.float32)
+                    # reset 步：action 填 0
+                    if isinstance(action, dict):
+                        for k, v in action.items():
+                            first[k] = np.zeros_like(v[i].detach().cpu().numpy())
+                    else:
+                        first["action"] = np.zeros_like(action[i].detach().cpu().numpy())
+                    add_to_cache(cache, id_bank[i], first)
+            if not is_eval:
+                # 裁剪在整批 done 处理完成后再进行，避免删掉本轮仍会访问的 episode。
+                step_in_dataset = erase_over_episodes(
+                    cache, limit, protected_keys=set(id_bank)
+                )
+                logger.scalar(f"数据集大小", step_in_dataset)
 
-			transition["reward"] = next_reward[i].item()
-			transition["discount"] = np.array(1.0, dtype=np.float32)
+        obs = obs_policy
+        reward = next_reward
+        done = next_done
+    # save_traj_drop_first_and_last(cache, pose_buffer, filename=os.path.join(directory, "random_trajectories_with_pose.npz"))
+    # 如果是评估模式，保留最小的缓存
+    if is_eval:
+        if len(cache) > 0:
+            cache.popitem(last=True)   # 先删除最后一个
+        while len(cache) > 1:
+            cache.popitem(last=False)  # 再从前面删，直到只剩 1 个
+    
+    return (step - steps, episode - episodes, done, length, obs, agent_state, reward)
 
-			add_to_cache(cache, id_bank[i], transition)
 
-			try:
-				print(transition['disagreement'])
-				if transition['disagreement'] is not None:
-					print("High disagreement detected during simulation:", transition['disagreement'])
-			except:
-				pass
-			
-		# === 2) 再生成下一步 policy 用的 obs_policy，并只对 done env 替换 reset 帧 ===
-		obs_policy = next_obs
-		if next_done.any():
-			reset_obs = vecenv.reset(seed=next_done)  # 必须是“只吐缓存/只标记mask”，不能全量reset仿真
-			# 避免影响 obs_step：clone 一份再改
-			obs_policy = {k: (v.clone() if torch.is_tensor(v) else v) for k, v in next_obs.items()}
-			for k, v in obs_policy.items():
-				if torch.is_tensor(v) and k in reset_obs and torch.is_tensor(reset_obs[k]):
-					obs_policy[k][next_done] = reset_obs[k][next_done]
 
-			# reset 帧语义：first=1,last=0,terminal=0（只对 done 的 env）
-			obs_policy["is_first"][next_done] = 1
-			obs_policy["is_last"][next_done] = 0
-			obs_policy["is_terminal"][next_done] = 0
-
-		# 记录已完成的子环境数据
-		done_indices = np.where(next_done)[0]
-		if len(done_indices) > 0:
-			for i in done_indices:
-				# 保存已完成的回合
-				index = id_bank[i]
-				length = len(cache[index]["reward"]) - 1
-				score = float(np.array(cache[index]["reward"]).sum())
-				# video_front = cache[index]["image"]
-				failure_data = cache[index]["failure"]
-				# video = video_front
-				pose_tensor = info['pose']['metrics/pose_command']
-				clean_pose = pose_tensor.detach().cpu().numpy()
-				pose_buffer.append(clean_pose)
-
-				# 记录环境的奖励和指标日志
-				log_data = info['log']  # 提取每个环境的log信息
-				for key, value in log_data.items():
-					# 将每个奖励和指标项记录到日志
-					logger.scalar(key, float(value.item()))  # 记录标量数据
-
-				# 如果不是评估模式，记录训练数据
-				if not is_eval:
-					step_in_dataset = erase_over_episodes(cache, limit)
-					logger.scalar(f"数据集大小", step_in_dataset)
-					logger.scalar(f"训练返回", score)
-					logger.scalar(f"训练步长", length)
-					logger.scalar(f"训练回合", len(cache))
-					logger.write(step=logger.step)
-				else:
-					if not "eval_lengths" in locals():
-						eval_lengths = []
-						eval_scores = []
-						eval_done = False
-					eval_scores.append(score)
-					eval_lengths.append(length)
-
-					score = sum(eval_scores) / len(eval_scores)
-					length = sum(eval_lengths) / len(eval_lengths)
-					# logger.video(f"评估策略", np.array(video)[None])
-
-					if len(eval_scores) >= episodes and not eval_done:
-						logger.scalar(f"评估返回", score)
-						logger.scalar(f"评估步长", length)
-						logger.scalar(f"评估回合", len(eval_scores))
-						logger.write(step=logger.step)
-						eval_done = True
-
-				# 更新ID
-				id_bank[i] = str(uuid.uuid4())
-				# ✅ 立刻往新 id 里插入 reset 起始帧（否则 episode 会从 o1 开始）
-				if reset_obs is not None:
-					first = {k: reset_obs[k][i].detach().cpu().numpy() for k in reset_obs if torch.is_tensor(reset_obs[k])}
-
-					# 强制标记
-					first["is_first"] = np.array(1, dtype=np.int32)
-					first["is_last"] = np.array(0, dtype=np.int32)
-					first["is_terminal"] = np.array(0, dtype=np.int32)
-
-					# reset 步：reward=0，discount=1
-					first["reward"] = np.array(0.0, dtype=np.float32)
-					first["discount"] = np.array(1.0, dtype=np.float32)
-
-					# reset 步：action 填 0（Dreamer 通常在 is_first 时会重置状态，这个 action 不会造成训练问题）
-					if isinstance(action, dict):
-						for k, v in action.items():
-							first[k] = np.zeros_like(v[i].detach().cpu().numpy())
-					else:
-						first["action"] = np.zeros_like(action[i].detach().cpu().numpy())
-
-					add_to_cache(cache, id_bank[i], first)
-
-		# 继续执行
-		obs = obs_policy
-		reward = next_reward
-		done = next_done
-	save_traj_drop_first_and_last(cache, pose_buffer, filename=os.path.join(directory, "random_trajectories_with_pose.npz"))
-	# 如果是评估模式，保留最小的缓存
-	if is_eval:
-		while len(cache) > 1:
-			cache.popitem(last=False)
-	
-	return (step - steps, episode - episodes, done, length, obs, agent_state, reward)
 def collect_vecenv(
     agent, vecenv, cache, directory,
     logger=None, steps=0, episodes=0, state=None,
@@ -1087,7 +1089,7 @@ def evaluate_venv_filtering(
                 traj_filtered[i] = []
                 traj_kld[i] = []
                 traj_recon_loss[i] = [] 
-                print(result)
+                # print(result)
 
                 # Save result
                 total_episode_cnt += 1 
@@ -1446,10 +1448,12 @@ def add_to_cache(cache, id, transition):
                 cache[id][key].append(convert(val))
 
 
-def erase_over_episodes(cache, dataset_size):
+def erase_over_episodes(cache, dataset_size, protected_keys=None):
     step_in_dataset = 0
+    protected_keys = set() if protected_keys is None else set(protected_keys)
 
-    for key, ep in reversed(sorted(cache.items(), key=lambda x: x[0])):
+    # OrderedDict: 从最新到最旧遍历，优先保留最近轨迹。
+    for key, ep in reversed(list(cache.items())):
         if (
             not dataset_size
             or step_in_dataset + (len(ep["reward"]) - 1) <= dataset_size
@@ -1458,7 +1462,7 @@ def erase_over_episodes(cache, dataset_size):
             # print(key, (len(ep["reward"]) - 1), step_in_dataset)
         else:
             #FIXME
-            if key.startswith("expert_"):
+            if key.startswith("expert_") or key in protected_keys:
                 continue
             del cache[key]
 

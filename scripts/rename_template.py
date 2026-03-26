@@ -27,13 +27,13 @@ def rename_file_contents(root_dir_path: str, old_name: str, new_name: str, exclu
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python rename_template.py <new_name>")
-        sys.exit(1)
+    # if len(sys.argv) != 2:
+    #     print("Usage: python rename_template.py <new_name>")
+    #     sys.exit(1)
 
     root_dir_path = str(Path(__file__).resolve().parent.parent)
-    old_name = "my_ur3_project"
-    new_name = sys.argv[1]
+    old_name = "ur3_lite"
+    new_name = "ur3_lite"
 
     print(f"Warning, this script will rename all instances of '{old_name}' to '{new_name}' in {root_dir_path}.")
     proceed = input("Proceed? (y/n): ")
@@ -41,11 +41,12 @@ if __name__ == "__main__":
     if proceed.lower() == "y":
         # rename the my_ur3_project folder
         os.rename(
-            os.path.join(root_dir_path, "exts", "my_ur3_project", "my_ur3_project"),
-            os.path.join(root_dir_path, "exts", "my_ur3_project", new_name),
+            os.path.join(root_dir_path, "exts", old_name, old_name),
+            os.path.join(root_dir_path, "exts", old_name, new_name),
         )
-        os.rename(os.path.join(root_dir_path, "exts", "my_ur3_project"), os.path.join(root_dir_path, "exts", new_name))
+        os.rename(os.path.join(root_dir_path, "exts", old_name), os.path.join(root_dir_path, "exts", new_name))
         # rename the file contents
-        rename_file_contents(root_dir_path, old_name, new_name, exclude_dirs=[".git"])
+        text_exts = {".py", ".md", ".txt", ".yaml", ".yml", ".json", ".toml", ".cfg", ".ini", ".xml"}
+        rename_file_contents(root_dir_path, old_name, new_name, exclude_dirs=[".git","assets","wandb","latent_safety"])
     else:
         print("Aborting.")

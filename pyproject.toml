@@ -55,7 +55,7 @@ known_isaaclabparty = [
 ]
 
 # Modify the following to include the package names of your first-party code
-known_firstparty = "my_ur3_project"
+known_firstparty = "ur3_lite"
 known_local_folder = "config"
 
 [tool.pyright]
