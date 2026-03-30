@@ -1,23 +1,25 @@
 import argparse
 import collections
-import pathlib
 import functools
 import numpy as np
-import ruamel.yaml as yaml
-import gymnasium as gym
-import torch
+import pathlib
 import sys
+import torch
 from tqdm import trange
+
+import ruamel.yaml as yaml
+
 sys.path.append("scripts")
+from torch import distributions as torchd
+
 import dreamerv3_torch.dreamer as dreamer
 import dreamerv3_torch.tools as tools
+
+import ur3_lite  # noqa: F401
 
 # 将 latent_safety 目录加入 Python 搜索路径，便于后续模块导入
 
 
-from torch import nn
-from torch import distributions as torchd
-import ur3_lite
 # 工具函数：将 torch 张量转为 numpy 数组（常用于日志或可视化）
 to_np = lambda x: x.detach().cpu().numpy()
 
@@ -301,6 +303,8 @@ def main(config):
 				torch.save(items_to_save, logdir / f"model_{idx_step + 1:04d}.pt")
 	else:
 		# ---------- 在线训练模式：交替评估 + 训练 ----------
+		save_every_steps = max(1, int(config.save_every))
+		next_save_step = ((int(agent._step) // save_every_steps) + 1) * save_every_steps
 		train_round = 0
 		while agent._step < config.steps + config.eval_every:
 			train_round += 1
@@ -385,11 +389,12 @@ def main(config):
 				"optims_state_dict": tools.recursively_collect_optim_state_dict(agent),
 			}
 			torch.save(items_to_save, logdir / "latest.pt")
-			# TODO: 可加入类似 model_only 中的 save_every 逻辑
-			if agent._step % config.save_every == 0:
-				save_name = f"model_{agent._step}.pt"
+			# Save snapshots whenever we cross save thresholds (robust to non-divisible step increments).
+			while trained_step >= next_save_step:
+				save_name = f"model_{next_save_step:04d}.pt"
 				torch.save(items_to_save, logdir / save_name)
 				print(f"Saved checkpoint to {logdir / save_name}")
+				next_save_step += save_every_steps
 	# 训练结束后，尝试关闭环境（防止资源泄露）
 	try:
 		train_envs.close()
@@ -417,7 +422,7 @@ if __name__ == "__main__":
 	parser.add_argument(
 		"--task",
 		type=str,
-		default="Ur3Lite-Ur3-PipeRelCamFinal-Ik-RL-Direct-v0",
+		default="Ur3Lite-PipeRelCamFinalGoal-Ik-RL-Direct-v0",
 		help="Name of the task."
 	)
 	parser.add_argument("--collect_only", action="store_true", default=False)
@@ -437,7 +442,6 @@ if __name__ == "__main__":
 	args.headless = True
 	# 从 configs.yaml 中加载所有配置（如 defaults / specific config 名）
 	import pathlib
-	import ruamel.yaml as yamlf
 
 	# 1. 初始化一个 YAML 解析器实例 (指定 typ='safe' 来替代原来的 safe_load)
 	yaml_parser = yaml.YAML(typ='safe', pure=True)

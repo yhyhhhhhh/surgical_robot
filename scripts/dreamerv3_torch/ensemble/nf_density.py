@@ -1,9 +1,9 @@
 import torch
-from pyro.distributions.transforms.planar import Planar
-from pyro.distributions.transforms.radial import Radial
-from pyro.distributions.transforms.affine_autoregressive import AffineAutoregressive, affine_autoregressive
-from torch import nn
 import torch.distributions as tdist
+from torch import nn
+
+from pyro.distributions.transforms.affine_autoregressive import affine_autoregressive
+from pyro.distributions.transforms.radial import Radial
 
 
 class NormalizingFlowDensity(nn.Module):

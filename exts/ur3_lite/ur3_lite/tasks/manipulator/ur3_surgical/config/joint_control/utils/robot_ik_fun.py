@@ -2,20 +2,16 @@ from __future__ import annotations
 
 import torch
 from collections.abc import Sequence
+from dataclasses import MISSING
 
 import omni.log
 
 import omni.isaac.lab.utils.math as math_utils
-from omni.isaac.lab.assets.articulation import Articulation
-from omni.isaac.lab.controllers.differential_ik import DifferentialIKController
-
 from omni.isaac.lab.assets import AssetBase
-from omni.isaac.lab.controllers import DifferentialIKController, DifferentialIKControllerCfg
-from dataclasses import MISSING
-
 from omni.isaac.lab.controllers import DifferentialIKControllerCfg
-from omni.isaac.lab.managers.action_manager import ActionTerm, ActionTermCfg
+from omni.isaac.lab.controllers.differential_ik import DifferentialIKController
 from omni.isaac.lab.utils import configclass
+
 
 @configclass
 class DifferentialInverseKinematicsActionCfg():

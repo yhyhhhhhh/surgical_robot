@@ -1,7 +1,7 @@
-import numpy as np
-from . import minecraft_base
-
 import gym
+import numpy as np
+
+from . import minecraft_base
 
 
 def make_env(task, *args, **kwargs):

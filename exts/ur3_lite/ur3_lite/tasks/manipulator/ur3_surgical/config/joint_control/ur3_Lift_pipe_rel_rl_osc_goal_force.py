@@ -17,13 +17,13 @@ from omni.isaac.lab.assets import Articulation, RigidObject
 from omni.isaac.lab.envs import DirectRLEnv
 from omni.isaac.lab.markers import VisualizationMarkers
 from omni.isaac.lab.sensors import Camera, ContactSensor, ContactSensorCfg
-
-from .ur3_lift_pipe_rl_cam_cfg import Ur3LiftPipeEnvCfg
+from omni.isaac.lab.controllers import OperationalSpaceController, OperationalSpaceControllerCfg
+from omni.isaac.lab.utils import math as math_utils
+from .ur3_lift_pipe_rl_osc_cfg import Ur3LiftPipeEnvCfg
 
 # 自己的模块
 from .utils.myfunc import *
 from .utils.robot_ik_fun import DifferentialInverseKinematicsAction
-
 
 # ---------------------------------------------------------------------------
 # 纯强化学习环境
@@ -36,10 +36,12 @@ from .utils.robot_ik_fun import DifferentialInverseKinematicsAction
 #   - 使用 Differential IK 把末端目标 pose 转为关节目标
 # ---------------------------------------------------------------------------
 
+
 class Ur3LiftNeedleEnv(DirectRLEnv):
     """
     纯 RL 版本的 UR3 鼻腔取物环境（管内精细抓取版本）。
     """
+
     cfg: Ur3LiftPipeEnvCfg
 
     def _use_image_obs(self) -> bool:
@@ -49,94 +51,114 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     # 初始化
     # ------------------------------------------------------------------
-    def __init__(self, cfg: Ur3LiftPipeEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(
+        self, cfg: Ur3LiftPipeEnvCfg, render_mode: str | None = None, **kwargs
+    ):
         super().__init__(cfg, render_mode, **kwargs)
-
         self.dt = self.cfg.sim.dt * self.cfg.decimation
 
-        # 末端 link 的 id
+        # 末端 body id
         self.ee_id = self._robot.data.body_names.index("scissors_tip")
         self.ee_fixed_id = self._robot.data.body_names.index("scrissor_fixed")
         self.ee_move_id = self._robot.data.body_names.index("scrissor_move")
+
+        # 关节 id
+        self.arm_joint_names = [
+            "shoulder_pan_joint",
+            "shoulder_lift_joint",
+            "elbow_joint",
+            "wrist_1_joint",
+            "wrist_2_joint",
+            "wrist_3_joint",
+        ]
+        self.arm_joint_ids = self._robot.find_joints(self.arm_joint_names)[0]
+        self.tip_joint_ids = self._robot.find_joints(["tip_joint"])[0]
+        self.num_arm_joints = len(self.arm_joint_ids)
+
+        # fixed-base 机械臂在 jacobian 里 body index 通常要 -1
+        self.ee_jacobi_body_idx = self.ee_id - 1
+
         # 关节软限位
         self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :, 0].to(self.device)
         self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :, 1].to(self.device)
 
-        # 仍然保留一个世界系 workspace 盒子（作为安全限制，可按需用）
-        self.workspace_min = torch.tensor([-0.03, -0.34, -0.24], device=self.device)
-        self.workspace_max = torch.tensor([ 0.03, -0.24, -0.18], device=self.device)
-
-        # 鼻腔顶部位置 & 轴向（z-）
+        # 管口位置/轴向
         self.pipe_top_pos, _ = self.get_pipe_top_pose()
-        self.u_axis = torch.tensor([0.0, 0.0, -1.0], device=self.device).unsqueeze(0).repeat(self.num_envs, 1)
+        self.u_axis = (
+            torch.tensor([0.0, 0.0, -1.0], device=self.device)
+            .unsqueeze(0)
+            .repeat(self.num_envs, 1)
+        )
 
         # === 管道 / 动作相关参数 ===
-        # 管道半径与长度（根据实际模型稍微调一下）
-        self.pipe_radius = 0.0075         # m
-        self.pipe_safety_margin = 0.000   # 离管壁的安全间距
-        self.pipe_length = 0.032           # m，可用的管长
+        self.pipe_radius = 0.0075
+        self.pipe_safety_margin = 0.000
+        self.pipe_length = 0.04
 
-        # 允许的轴向深度范围（s>0 在管内）
-        self.s_min = -0.01
-        self.s_max = self.pipe_length
+        self.step_outside = torch.tensor([[0.01, 0.003, 0.30, 0.6]], device=self.device)
+        self.step_inside = torch.tensor([[0.002, 0.0005, 0.04, 0.04]], device=self.device)
 
-        # 动作空间: [Δs, Δr, Δθ, Δyaw, grip_speed_factor]
-        # 管外：大步长
-        self.step_outside = torch.tensor(
-            [[0.01, 0.003, 0.30, 0.6]],   # Δs, Δr, Δθ, Δyaw
-            device=self.device,
-        )
-        # # 管内：细步长
-        # self.step_inside = torch.tensor(
-        #     [[0.004, 0.001, 0.08, 0.04]],
-        #     device=self.device,
-        # )
-        # 管内：细步长
-        self.step_inside = torch.tensor(
-            [[0.002, 0.0005, 0.04, 0.04]],
-            device=self.device,
-        )
-        # 抓手阻抗控制相关
-        self.gripper_min = torch.tensor([-0.28], device=self.device)  # 完全闭合
-        self.gripper_max = torch.tensor([-0.10], device=self.device)  # 完全张开
-        self.gripper_cmd = torch.full((self.num_envs, 1), -0.10, device=self.device)  # 初始略张开
-        self.gripper_speed = 0.7  # rad/s
+        self.gripper_min = torch.tensor([-0.28], device=self.device)
+        self.gripper_max = torch.tensor([-0.10], device=self.device)
+        self.gripper_cmd = torch.full((self.num_envs, 1), -0.10, device=self.device)
+        self.gripper_speed = 0.7
 
-        # 末端目标 pose（用于动作平滑）
+        # 当前末端 pose / 目标 pose
         ee_state = self._robot.data.body_state_w[:, self.ee_id]
         self.ee_target_pos_w = ee_state[:, 0:3].clone()
         self.ee_target_quat_w = ee_state[:, 3:7].clone()
+
+        # 记录一个“名义姿态”，后面 yaw 在这个基础上叠加
+        self.ee_nominal_quat_w = ee_state[:, 3:7].clone()
         self.ee_target_yaw = torch.zeros(self.num_envs, device=self.device)
 
-        # 局部 y 轴旋到世界 z 轴的固定旋转
-        yaw0 = torch.tensor(-math.pi / 2.0, device=self.device)
-        pitch0 = torch.tensor(0.0, device=self.device)
-        roll_align = torch.tensor(math.pi / 2.0, device=self.device)  # 绕 X 轴 +90°
-        self.q_align_y_to_z = quat_from_euler_xyz(roll_align, pitch0, yaw0)
+        # OSC controller
+        self.osc_cfg = OperationalSpaceControllerCfg(
+            target_types=["pose_abs"],
+            impedance_mode="fixed",
+            inertial_dynamics_decoupling=True,
+            partial_inertial_dynamics_decoupling=False,
+            gravity_compensation=True,
+            motion_control_axes_task=[1, 1, 1, 1, 1, 1],
+            contact_wrench_control_axes_task=[0, 0, 0, 0, 0, 0],
+            motion_stiffness_task=[250.0, 250.0, 250.0, 40.0, 40.0, 40.0],
+            motion_damping_ratio_task=1.0,
+            nullspace_control="none",
+        )
 
-        # reset 时间统计（可选）
+        self._osc = OperationalSpaceController(
+            self.osc_cfg,
+            num_envs=self.num_envs,
+            device=self.device,
+        )
+
+        # command / effort buffer
+        self.osc_cmd = torch.zeros(self.num_envs, 7, device=self.device)  # pose_abs in base: xyz + quat
+        self.arm_effort_cmd = torch.zeros(self.num_envs, self.num_arm_joints, device=self.device)
+
+        # reset 统计
         self.last_reset_t = torch.full(
-            (self.num_envs,), float("nan"),
-            device=self.device, dtype=torch.float64
+            (self.num_envs,), float("nan"), device=self.device, dtype=torch.float64
         )
         self.reset_interval = torch.zeros_like(self.last_reset_t)
 
-        self._build_dreamer_observation_space() 
-        
-        # debug 可视化
-        self.set_debug_vis(self.cfg.debug_vis)
+        self.goal_pos_local = torch.tensor([0.00, -0.29, -0.21], device=self.device)
+        self.goal_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+
+        self.goal_reach_thr = 0.005
+        self.goal_lift_thr = 0.003
+        self.prev_obj_goal_dist = torch.zeros(self.num_envs, device=self.device)
+
+        self._build_dreamer_observation_space()
+
+        # self.set_debug_vis(self.cfg.debug_vis)
         self.command_visualizer_b = torch.tensor([[0.4, 0, 0.35]] * self.num_envs, device=self.device)
 
-        self.prev_ee_to_obj_dist = torch.zeros(self.num_envs, device=self.device)
-        # __init__
         self.last_actions = torch.zeros(self.num_envs, 5, device=self.device)
-        self.cur_actions  = torch.zeros(self.num_envs, 5, device=self.device)
+        self.cur_actions = torch.zeros(self.num_envs, 5, device=self.device)
 
         self._use_external_pose = False
         self._external_pose_buffer = None
-        # === Live UI monitor (object_lift & gripper_reward) ===
-        # self._init_live_monitor(enable=True, history_len=240, env_index=None)  
-        # env_index=None -> 取所有 env 的 mean；你也可以传 env_index=0 只看第0个环境
 
     def _build_dreamer_observation_space(self):
         # num_envs（IsaacLab vectorized env）
@@ -176,27 +198,6 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
     # 场景搭建
     # ------------------------------------------------------------------
     def _setup_scene(self):
-        # 地面
-        self.cfg.ground.spawn.func(
-            self.cfg.ground.prim_path,
-            self.cfg.ground.spawn,
-            translation=self.cfg.ground.init_state.pos,
-        )
-        # 机器人桌子
-        self.cfg.table_robot.spawn.func(
-            self.cfg.table_robot.prim_path,
-            self.cfg.table_robot.spawn,
-            translation=self.cfg.table_robot.init_state.pos,
-            orientation=self.cfg.table_robot.init_state.rot,
-        )
-        # 手术台
-        self.cfg.table_operate.spawn.func(
-            self.cfg.table_operate.prim_path,
-            self.cfg.table_operate.spawn,
-            translation=self.cfg.table_operate.init_state.pos,
-            orientation=self.cfg.table_operate.init_state.rot,
-        )
-
         # 机械臂
         self._robot = Articulation(self.cfg.left_robot)
 
@@ -205,7 +206,6 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         if self._use_image_obs():
             self._camera = Camera(cfg=self.cfg.camera)
             self.scene.sensors["Camera"] = self._camera
-
         # 管道
         self.cfg.pipe.spawn.func(
             self.cfg.pipe.prim_path,
@@ -216,33 +216,68 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         # 小物体
         self._object = RigidObject(cfg=self.cfg.object)
+
+        # 地面
+        self.cfg.ground.spawn.func(
+            self.cfg.ground.prim_path,
+            self.cfg.ground.spawn,
+            translation=self.cfg.ground.init_state.pos,
+        )
+        self._object = RigidObject(cfg=self.cfg.object)
         self._pipe_contact = ContactSensor(
             ContactSensorCfg(
-                prim_path="{ENV_REGEX_NS}/pipe/pipe",      # 改成你USD里内壁prim真实名字
+                prim_path="/World/envs/env_.*/pipe/pipe",      # 改成你USD里内壁prim真实名字
                 update_period=0.0,
                 history_length=4,
                 debug_vis=False,
-                track_air_time=False,
-                filter_prim_paths_expr=["{ENV_REGEX_NS}/Robot/.*"],
+                # filter_prim_paths_expr=["/World/envs/env_.*/Left_Robot/ur3_robot/tip_link"],
             )
         )
         self.scene.sensors["pipe_contact"] = self._pipe_contact
 
         self._bottom_contact = ContactSensor(
             ContactSensorCfg(
-                prim_path="{ENV_REGEX_NS}/pipe/bottom",    # 改成真实名字
+                prim_path="/World/envs/env_.*/pipe/bottom",    # 改成真实名字
                 update_period=0.0,
                 history_length=4,
                 debug_vis=False,
-                track_air_time=False,
-                filter_prim_paths_expr=["{ENV_REGEX_NS}/Robot/.*"],
+                # filter_prim_paths_expr=["/World/envs/env_.*/Left_Robot/ur3_robot/tip_link"],
             )
         )
         self.scene.sensors["bottom_contact"] = self._bottom_contact
-        # 额外视图
-        self.scene.extras["pipe"] = XFormPrimView(self.cfg.pipe.prim_path, reset_xform_properties=False)
-        self.scene.extras["Table"] = XFormPrimView(self.cfg.table_robot.prim_path, reset_xform_properties=False)
-        self.scene.extras["ground"] = XFormPrimView(self.cfg.ground.prim_path, reset_xform_properties=False)
+
+        self._gripper_contact = ContactSensor(
+            ContactSensorCfg(
+                prim_path="/World/envs/env_.*/Left_Robot/ur3_robot/tip_Link",    # 改成真实名字
+                update_period=0.0,
+                history_length=4,
+                debug_vis=False,
+                filter_prim_paths_expr=["/World/envs/env_.*/object/object"],
+            )
+        )
+        self.scene.sensors["gripper_contact"] = self._gripper_contact
+
+        self._extension_contact = ContactSensor(
+            ContactSensorCfg(
+                prim_path="/World/envs/env_.*/Left_Robot/ur3_robot/Extension_Link",    # 改成真实名字
+                update_period=0.0,
+                history_length=4,
+                debug_vis=False,
+                filter_prim_paths_expr=["/World/envs/env_.*/object/object"],
+            )
+        )
+        self.scene.sensors["extension_contact"] = self._extension_contact
+        
+        
+        self._object_contact = ContactSensor(
+            ContactSensorCfg(
+                prim_path="/World/envs/env_.*/object/object",    # 改成真实名字
+                update_period=0.0,
+                history_length=4,
+                debug_vis=False,
+            )
+        )
+        self.scene.sensors["object_contact"] = self._object_contact
 
         # 注册到 scene
         self.scene.articulations["left_robot"] = self._robot
@@ -254,26 +289,84 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 并行复制环境
         self.scene.clone_environments(copy_from_source=False)
         self.scene.filter_collisions(global_prim_paths=[])
+    def _compute_osc_states(self):
+        """计算 OSC 所需的机器人状态，全部转到 base/root frame。"""
+        robot = self._robot
 
+        # Jacobian: (N, 6, dof)
+        jacobian_w = robot.root_physx_view.get_jacobians()[
+            :, self.ee_jacobi_body_idx, :, self.arm_joint_ids
+        ]
+
+        # M(q): (N, dof, dof)
+        mass_matrix = robot.root_physx_view.get_mass_matrices()[
+            :, self.arm_joint_ids, :
+        ][:, :, self.arm_joint_ids]
+
+        # g(q): (N, dof)
+        gravity = robot.root_physx_view.get_generalized_gravity_forces()[:, self.arm_joint_ids]
+
+        # root pose
+        root_state_w = robot.data.root_state_w
+        root_pos_w = root_state_w[:, 0:3]
+        root_quat_w = root_state_w[:, 3:7]
+
+        # world Jacobian -> base Jacobian
+        root_rot_inv = math_utils.matrix_from_quat(math_utils.quat_inv(root_quat_w))
+        jacobian_b = jacobian_w.clone()
+        jacobian_b[:, 0:3, :] = torch.bmm(root_rot_inv, jacobian_w[:, 0:3, :])
+        jacobian_b[:, 3:6, :] = torch.bmm(root_rot_inv, jacobian_w[:, 3:6, :])
+
+        # ee pose in world
+        ee_state_w = robot.data.body_state_w[:, self.ee_id]
+        ee_pos_w = ee_state_w[:, 0:3]
+        ee_quat_w = ee_state_w[:, 3:7]
+
+        # ee pose in base
+        ee_pos_b, ee_quat_b = math_utils.subtract_frame_transforms(
+            root_pos_w, root_quat_w, ee_pos_w, ee_quat_w
+        )
+        ee_pose_b = torch.cat([ee_pos_b, ee_quat_b], dim=-1)
+
+        # ee vel in base
+        ee_lin_vel_w = ee_state_w[:, 7:10]
+        ee_ang_vel_w = ee_state_w[:, 10:13]
+        root_lin_vel_w = root_state_w[:, 7:10]
+        root_ang_vel_w = root_state_w[:, 10:13]
+
+        rel_lin_vel_w = ee_lin_vel_w - root_lin_vel_w
+        rel_ang_vel_w = ee_ang_vel_w - root_ang_vel_w
+
+        ee_lin_vel_b = math_utils.quat_rotate_inverse(root_quat_w, rel_lin_vel_w)
+        ee_ang_vel_b = math_utils.quat_rotate_inverse(root_quat_w, rel_ang_vel_w)
+        ee_vel_b = torch.cat([ee_lin_vel_b, ee_ang_vel_b], dim=-1)
+
+        joint_pos = robot.data.joint_pos[:, self.arm_joint_ids]
+        joint_vel = robot.data.joint_vel[:, self.arm_joint_ids]
+
+        return jacobian_b, mass_matrix, gravity, ee_pose_b, ee_vel_b, joint_pos, joint_vel
     def set_external_command(self, pose_command: torch.Tensor):
         """
         接收外部传入的 pose_command，并强制开启'外部数据模式'。
-        
+
         Args:
             pose_command (Tensor): 形状必须是 (Num_Envs, 7)。
                                    包含所有环境对应的 Pose 目标。
         """
         # 1. 格式检查与存储
         if pose_command.shape[0] != self.num_envs:
-            print(f"⚠️ 警告: 输入 Pose 数量 ({pose_command.shape[0]}) 与环境数 ({self.num_envs}) 不一致！")
-            
+            print(
+                f"⚠️ 警告: 输入 Pose 数量 ({pose_command.shape[0]}) 与环境数 ({self.num_envs}) 不一致！"
+            )
+
         # 存入 buffer (确保在正确的 device 上)
         self._external_pose_buffer = pose_command.to(self.device).clone()
-        
+
         # 2. 开启标志位
         self._use_external_pose = True
-        
+
         print(f"✅ 已接收外部 Pose Command，模式切换为 [固定轨迹]。")
+
     # ------------------------------------------------------------------
     # 采样小物体初始位置/姿态（相对鼻腔）
     # ------------------------------------------------------------------
@@ -282,7 +375,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         根据标志位决定：是使用 set_external_command 存下的数据，还是随机生成。
         """
         device = self.device
-        
+
         # ====================================================
         # 分支 A: 标志位为 True -> 使用外部存入的数据
         # ====================================================
@@ -302,7 +395,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             # 4. 赋值给 IsaacLab 的 buffer
             self.pose_command_w[env_ids, :3] = pos_w
             self.pose_command_w[env_ids, 3:] = rot
-            
+
             return  # 【直接返回，不执行下面的随机逻辑】
 
         # ====================================================
@@ -346,10 +439,10 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             r:   径向距离
             th:  截面内的极角
         """
-        delta = pos_w - self.pipe_top_pos       # (N,3)
+        delta = pos_w - self.pipe_top_pos  # (N,3)
         s = torch.sum(delta * self.u_axis, dim=-1, keepdim=True)  # (N,1)
 
-        radial = delta - s * self.u_axis        # (N,3)
+        radial = delta - s * self.u_axis  # (N,3)
         x_r = radial[..., 0:1]
         y_r = radial[..., 1:2]
 
@@ -363,109 +456,88 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor):
         """
-        RL 动作:
-            actions[:, 0] → Δs    沿管轴向前进/后退
-            actions[:, 1] → Δr    朝管中心/管壁
-            actions[:, 2] → Δθ    在截面内绕中心旋转
-            actions[:, 3] → Δyaw  绕自身轴的旋转（末端局部 y 轴竖直）
-            actions[:, 4] → 抓手速度因子（阻抗式控制）
+        actions[:, 0] -> Δs
+        actions[:, 1] -> Δr
+        actions[:, 2] -> Δθ
+        actions[:, 3] -> Δyaw
+        actions[:, 4] -> gripper
         """
-        # actions = torch.clamp(actions, -1.0, 1.0)
-        # DEBUG
-        # actions = torch.clamp(actions, -0.0, 0.0)
-
         self.cur_actions = torch.clamp(actions, -1.0, 1.0)
-        # print(actions)
-        # 1) 当前末端世界位姿
+
+        # 1) 当前末端世界位置
         ee_state = self._robot.data.body_state_w[:, self.ee_id]
         ee_pos_w = ee_state[:, 0:3]
 
-        # 转到管道坐标系：s, r, θ
-        s_cur, r_cur, th_cur, x_r, y_r = self._world_to_pipe_coords(ee_pos_w)
-        s_cur_s = s_cur.squeeze(-1)   # (N,)
-        r_cur_s = r_cur.squeeze(-1)
-        th_cur_s = th_cur.squeeze(-1)
+        # 当前在管道坐标系下的位置
+        s_cur, r_cur, th_cur, _, _ = self._world_to_pipe_coords(ee_pos_w)
+        s_cur = s_cur.squeeze(-1)
+        r_cur = r_cur.squeeze(-1)
+        th_cur = th_cur.squeeze(-1)
 
-        # 是否在管内（用于步长插值）
-        in_pipe = (s_cur_s > 0.0) & (s_cur_s < (self.pipe_length - self.pipe_safety_margin))
+        in_pipe = (s_cur > 0.0) & (s_cur < (self.pipe_length - self.pipe_safety_margin))
 
-        # 2) 动作缩放：管外粗、管内细
+        # 2) 管外粗 / 管内细
         step_scale = torch.where(
-            in_pipe.unsqueeze(-1),      # (N,1)
-            self.step_inside,          # (1,4) → (N,4)
-            self.step_outside,         # (1,4) → (N,4)
+            in_pipe.unsqueeze(-1),
+            self.step_inside,
+            self.step_outside,
         )
-        delta_pipe = actions[:, 0:4] * step_scale  # (N,4)
+        delta_pipe = self.cur_actions[:, 0:4] * step_scale
 
         delta_s = delta_pipe[:, 0]
         delta_r = delta_pipe[:, 1]
         delta_th = delta_pipe[:, 2]
-        delta_yaw = actions[:, 3]
-        self.ee_target_yaw = self.ee_target_yaw + delta_yaw
+        delta_yaw = delta_pipe[:, 3]   # 注意：这里用缩放后的 yaw
 
-        # 抓手速度因子
-
-        # 3) 在管道坐标系中更新目标位置
-        # s_tgt = torch.clamp(s_cur_s + delta_s, self.s_min, self.s_max)
-        # r_tgt = torch.clamp(
-        #     r_cur_s + delta_r,
-        #     0.0,
-        #     self.pipe_radius - self.pipe_safety_margin,
-        # )
-        s_tgt = s_cur_s + delta_s
-        r_tgt = r_cur_s + delta_r
-        th_tgt = th_cur_s + delta_th
+        # 3) 更新目标位置
+        s_tgt = torch.clamp(s_cur + delta_s, min=-0.01, max=self.pipe_length)
+        r_tgt = torch.clamp(
+            r_cur + delta_r,
+            min=0.0,
+            max=self.pipe_radius - self.pipe_safety_margin,
+        )
+        th_tgt = th_cur + delta_th
 
         x_r_new = r_tgt * torch.cos(th_tgt)
         y_r_new = r_tgt * torch.sin(th_tgt)
+
         radial_new = torch.stack(
             [x_r_new, y_r_new, torch.zeros_like(x_r_new)],
             dim=-1,
-        )  # (N,3)
+        )
+        axial_new = s_tgt.unsqueeze(-1) * self.u_axis
 
-        axial_new = s_tgt.unsqueeze(-1) * self.u_axis  # (N,3)
-        self.ee_target_pos_w = self.pipe_top_pos + axial_new + radial_new  # (N,3)
+        self.ee_target_pos_w = self.pipe_top_pos + axial_new + radial_new
 
-        # 4) 姿态目标：局部 y 轴竖直 + yaw 控制
-        self.ee_target_yaw = self.ee_target_yaw + delta_yaw  # (N,)
-        zeros = torch.zeros_like(self.ee_target_yaw)
+        # 4) 更新目标姿态
+        # 这里用“初始名义姿态 + 围绕局部 y 轴的 yaw 增量”
+        self.ee_target_yaw = self.ee_target_yaw + delta_yaw
 
-        # q_align = self.q_align_y_to_z.to(self.device)
-        # if q_align.ndim == 1:
-        #     q_align = q_align.unsqueeze(0)
-        # q_align = q_align.expand(q_yaw.shape[0], -1)  # (N,4)
+        local_z = torch.zeros(self.num_envs, 3, device=self.device)
+        local_z[:, 2] = 1.0
+        q_yaw = math_utils.quat_from_angle_axis(self.ee_target_yaw, local_z)
 
-        # self.ee_target_quat_w = math_utils.quat_mul(q_yaw, q_align)
+        self.ee_target_quat_w = math_utils.quat_mul(self.ee_nominal_quat_w, q_yaw)
         self.ee_target_quat_w = torch.nn.functional.normalize(self.ee_target_quat_w, dim=-1)
 
-        # 5) world → base，交给 IK
+        # 5) world -> base，生成 OSC 的 pose_abs command
         root_pos_w = self._robot.data.root_state_w[:, :3]
         root_quat_w = self._robot.data.root_state_w[:, 3:7]
-        pos_base, quat_base = math_utils.subtract_frame_transforms(
-            root_pos_w, root_quat_w,
-            self.ee_target_pos_w, self.ee_target_quat_w,
+
+        pos_b, quat_b = math_utils.subtract_frame_transforms(
+            root_pos_w,
+            root_quat_w,
+            self.ee_target_pos_w,
+            self.ee_target_quat_w,
         )
-        pose_base = torch.cat([pos_base, quat_base], dim=-1)
-        self._robot_ik.process_actions(pose_base)
+        self.osc_cmd = torch.cat([pos_b, quat_b], dim=-1)
 
-        # 6) 抓手阻抗
-        # --- 原始代码 (即现在的做法) ---
-        # close_flag = (actions[:, 4:5] > 0.0).float()
-        # desired = close_flag * self.gripper_min + (1.0 - close_flag) * self.gripper_max
+        # 6) gripper 保持你原来的连续映射 + 限速
+        raw_action = torch.clamp(self.cur_actions[:, 4:5], -1.0, 1.0)
+        desired = self.gripper_max + (raw_action + 1.0) * 0.5 * (
+            self.gripper_min - self.gripper_max
+        )
 
-        # --- ✅ 优化后：连续映射控制 ---
-        # 1. 将动作 [-1, 1] 线性映射到 [gripper_max, gripper_min]
-        #    注意：通常定义 action=1 为闭合(min_width)，action=-1 为张开(max_width)
-        #    公式：target = open + (action + 1)/2 * (close - open)
-        raw_action = actions[:, 4:5]
-        # 限制范围，防止 tanh 失效后越界（虽然通常不需要，但在 IK 里安全第一）
-        raw_action = torch.clamp(raw_action, -1.0, 1.0) 
-
-        # 线性插值
-        desired = self.gripper_max + (raw_action + 1.0) * 0.5 * (self.gripper_min - self.gripper_max)
-
-        # --- 2. 速度限制 (Rate Limiter) ---
-        # 这部分你原来的逻辑很好，必须保留！用来模拟真实电机的速度，防止瞬移
         max_step = self.gripper_speed * self.dt
         delta = torch.clamp(desired - self.gripper_cmd, -max_step, max_step)
         self.gripper_cmd = self.gripper_cmd + delta
@@ -474,45 +546,59 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
     # 把 IK 输出写进关节目标
     # ------------------------------------------------------------------
     def _apply_action(self):
-        ik_action = self._robot_ik.apply_actions()  # (N, 6)
-        robot_action = torch.cat([ik_action, self.gripper_cmd], dim=1)
-        self._robot.set_joint_position_target(robot_action)
+        jacobian_b, mass_matrix, gravity, ee_pose_b, ee_vel_b, joint_pos, joint_vel = self._compute_osc_states()
 
+        # 设置 task-space 目标
+        self._osc.set_command(
+            command=self.osc_cmd,
+            current_ee_pose_b=ee_pose_b,
+        )
+
+        # 计算关节 effort
+        self.arm_effort_cmd = self._osc.compute(
+            jacobian_b=jacobian_b,
+            current_ee_pose_b=ee_pose_b,
+            current_ee_vel_b=ee_vel_b,
+            current_ee_force_b=None,
+            mass_matrix=mass_matrix,
+            gravity=gravity,
+            current_joint_pos=joint_pos,
+            current_joint_vel=joint_vel,
+            nullspace_joint_pos_target=None,
+        )
+
+        # arm: effort control
+        self._robot.set_joint_effort_target(
+            self.arm_effort_cmd,
+            joint_ids=self.arm_joint_ids,
+        )
+
+        # tip: 仍然位置控制
+        self._robot.set_joint_position_target(
+            self.gripper_cmd,
+            joint_ids=self.tip_joint_ids,
+        )
     # ------------------------------------------------------------------
     # 终止条件（保留你原来的逻辑）
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        # === 用抬起高度作为唯一成功条件 ===
-        obj_pos_w = self.scene.rigid_objects["object"].data.body_pos_w[:, 0, :3]
-
-        obj_z = obj_pos_w[:, 2] - self.scene.env_origins[:, 2]
-        init_z = self.scene.rigid_objects["object"].data.default_root_state[:, 2]
-        object_lift = torch.clamp(obj_z - init_z, min=0.0)
-
-        lift_success_thr = 0.005  # 你和 reward 里保持一致
-        success = (object_lift > lift_success_thr)
-
-        self.terminated = success
-
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         self.terminated = truncated
-
         return self.terminated, truncated
 
     def _get_rewards(self) -> torch.Tensor:
+
+        # print("-------------------------------")
+        # print("Received force matrix of: ", self.scene.sensors["pipe_contact"].data.force_matrix_w)
+        # print("Received contact force of: ", self.scene.sensors["gripper_contact"].data.net_forces_w)
+        # print("-------------------------------")
+        # print("Received force matrix of: ", self.scene.sensors["bottom_contact"].data.force_matrix_w)
+        # print("Received contact force of: ", self.scene.sensors["extension_contact"].data.net_forces_w)
+        # print("-------------------------------")
+        # print("Received force matrix of: ", self.scene.sensors["object_contact"].data.net_forces_w)
         # ------------------- 末端 / 物体世界坐标 -------------------
         ee_pos_w = self._robot.data.body_pos_w[:, self.ee_id, 0:3]
         obj_pos_w = self.scene.rigid_objects["object"].data.body_pos_w[:, 0, :3]
-
-        # 调用边界接触力统计并打印
-        pipe_force_vec, bottom_force_vec, pipe_force, bottom_force = self._get_boundary_contact_forces()
-        print(
-            "[boundary_contact] "
-            f"pipe_mean={pipe_force.mean().item():.6f}, "
-            f"bottom_mean={bottom_force.mean().item():.6f}, "
-            f"pipe_vec_env0={pipe_force_vec[0].tolist()}, "
-            f"bottom_vec_env0={bottom_force_vec[0].tolist()}"
-        )
 
         ee_dist = torch.norm(ee_pos_w - obj_pos_w, dim=1)
         self.ee_dist = ee_dist
@@ -520,12 +606,18 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # ------------------- 管道坐标 -------------------
         s_e, r_e, th_e, _, _ = self._world_to_pipe_coords(ee_pos_w)
         s_o, r_o, th_o, _, _ = self._world_to_pipe_coords(obj_pos_w)
-        s_e = s_e.squeeze(-1); r_e = r_e.squeeze(-1); th_e = th_e.squeeze(-1)
-        s_o = s_o.squeeze(-1); r_o = r_o.squeeze(-1); th_o = th_o.squeeze(-1)
+        s_e = s_e.squeeze(-1)
+        r_e = r_e.squeeze(-1)
+        th_e = th_e.squeeze(-1)
+        s_o = s_o.squeeze(-1)
+        r_o = r_o.squeeze(-1)
+        th_o = th_o.squeeze(-1)
 
         # ------------------- 截面误差 e_lat & 轴向误差 e_ax -------------------
-        x_e = r_e * torch.cos(th_e); y_e = r_e * torch.sin(th_e)
-        x_o = r_o * torch.cos(th_o); y_o = r_o * torch.sin(th_o)
+        x_e = r_e * torch.cos(th_e)
+        y_e = r_e * torch.sin(th_e)
+        x_o = r_o * torch.cos(th_o)
+        y_o = r_o * torch.sin(th_o)
         e_lat = torch.sqrt((x_e - x_o) ** 2 + (y_e - y_o) ** 2 + 1e-8)
         e_ax = torch.abs(s_e - s_o)
 
@@ -533,56 +625,66 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 原始 g_lat 可能会在远处变成 0，导致机器人不想进管子
         # 加上 0.1 的基线，保证即使没对齐，稍微靠近点轴向也是有分的
         g_lat_raw = torch.sigmoid((0.001 - e_lat) / (0.0007 + 1e-8))
-        g_lat = 0.1 + 0.9 * g_lat_raw 
+        g_lat = 0.1 + 0.9 * g_lat_raw
 
         # ------------------- 2) 对齐奖励 (保留) -------------------
-        r_lat = torch.exp(- (e_lat / 0.004) ** 2)
-        r_lat_fine = torch.exp(- (e_lat / 0.001) ** 2)
+        r_lat = torch.exp(-((e_lat / 0.004) ** 2))
+        r_lat_fine = torch.exp(-((e_lat / 0.001) ** 2))
 
-        r_ax = torch.exp(- (e_ax / 0.010) ** 2)
-        r_ax_fine = torch.exp(- (e_ax / 0.003) ** 2)
-        
+        r_ax = torch.exp(-((e_ax / 0.010) ** 2))
+        r_ax_fine = torch.exp(-((e_ax / 0.003) ** 2))
+
         # 轴向奖励被 g_lat 门控，防止乱插
         r_ax_all = g_lat * (0.6 * r_ax + 0.4 * r_ax_fine)
 
         align_reward = 1.6 * (0.6 * r_lat + 0.4 * r_lat_fine) + 1.2 * r_ax_all
 
         # 3D 兜底 (不受 g_lat 限制，作为全域引导)
-        dist_reward = 0.2 * torch.exp(- (ee_dist / 0.01) ** 2)
+        dist_reward = 0.2 * torch.exp(-((ee_dist / 0.01) ** 2))
 
         # ------------------- 2.5) Yaw (保留) -------------------
         ee_quat_w = self._robot.data.body_state_w[:, self.ee_id, 3:7]
         obj_quat_w = self.scene.rigid_objects["object"].data.body_state_w[:, 0, 3:7]
-        
+
         def quat_to_yaw(q):
             w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
             siny_cosp = 2.0 * (w * z + x * y)
             cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
             return torch.atan2(siny_cosp, cosy_cosp)
 
-        dyaw_abs = torch.abs(torch.atan2(torch.sin(quat_to_yaw(ee_quat_w) - quat_to_yaw(obj_quat_w)), 
-                                         torch.cos(quat_to_yaw(ee_quat_w) - quat_to_yaw(obj_quat_w))))
-        
+        dyaw_abs = torch.abs(
+            torch.atan2(
+                torch.sin(quat_to_yaw(ee_quat_w) - quat_to_yaw(obj_quat_w)),
+                torch.cos(quat_to_yaw(ee_quat_w) - quat_to_yaw(obj_quat_w)),
+            )
+        )
+
         # Yaw 门控：只有位置比较准了才在乎 Yaw
-        g_yaw = torch.sigmoid((0.003 - e_lat) / 0.0005) * torch.sigmoid((0.004 - e_ax) / 0.0015)
-        r_yaw = 0.6 * torch.exp(- (dyaw_abs / 0.35) ** 2) + 0.4 * torch.exp(- (dyaw_abs / 0.12) ** 2)
+        g_yaw = torch.sigmoid((0.003 - e_lat) / 0.0005) * torch.sigmoid(
+            (0.004 - e_ax) / 0.0015
+        )
+        r_yaw = 0.6 * torch.exp(-((dyaw_abs / 0.35) ** 2)) + 0.4 * torch.exp(
+            -((dyaw_abs / 0.12) ** 2)
+        )
         yaw_reward = 0.5 * g_yaw * r_yaw
 
         # ------------------- 5) 状态监测：是否抬起 -------------------
         # 把这个提到前面，因为夹爪逻辑需要它
         obj_z = obj_pos_w[:, 2] - self.scene.env_origins[:, 2]
-        init_z = self._object.data.default_root_state[:, 2] # 假设你能取到这个
+        init_z = self._object.data.default_root_state[:, 2]  # 假设你能取到这个
         # 或者简单的：init_z = 0.04 (你的桌子高度) + ...
         # 这里为了稳健，可以用相对高度
-        
+
         object_lift = torch.clamp(obj_z - init_z, min=0.0)
 
-        is_lifted = object_lift > 0.002 # 抬起 2mm 就算抬了
+        is_lifted = object_lift > 0.002  # 抬起 2mm 就算抬了
 
         # ------------------- 3) 夹爪奖励 (核心修改：规则引导 + 状态锁定) -------------------
         # A. 获取当前 RL 动作 (连续值归一化到 0~1, 0=闭, 1=开)
         # 假设 actions 范围是 -1 到 1
-        grip_act_norm = (self.gripper_cmd - self.gripper_min) / (self.gripper_max - self.gripper_min + 1e-6)
+        grip_act_norm = (self.gripper_cmd - self.gripper_min) / (
+            self.gripper_max - self.gripper_min + 1e-6
+        )
         grip_act_norm = torch.clamp(grip_act_norm, 0.0, 1.0).squeeze(-1)
 
         # B. 计算“老师”的目标 (几何规则)
@@ -590,40 +692,43 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 两片刃尖位置 (你需要保证 self.ee_fixed_id 在 init 里定义了)
         p_fix_w = self._robot.data.body_pos_w[:, self.ee_fixed_id, 0:3]
         p_mov_w = self._robot.data.body_pos_w[:, self.ee_move_id, 0:3]
-        
+
         # 这是一个简单的几何判断函数，判断物体是否在两指中间
         # check_object_in_gripper 需要你在外部定义或在这里展开
         is_captured_rule = self.check_object_in_gripper(obj_pos_w, p_fix_w, p_mov_w)
-        
+
         # C. 确定目标状态 target_grip (0=闭, 1=开)
         # 逻辑：
         #   1. 如果已经抬起来了 (is_lifted)，必须死死闭合 (0.0) -> 防止掉落
         #   2. 如果没抬起，但几何条件满足 (is_captured_rule)，老师建议闭合 (0.0)
         #   3. 否则建议张开 (1.0)
         target_grip = torch.where(
-            is_lifted | is_captured_rule, 
-            torch.zeros_like(grip_act_norm), # 闭
-            torch.ones_like(grip_act_norm)   # 开
+            is_lifted | is_captured_rule,
+            torch.zeros_like(grip_act_norm),  # 闭
+            torch.ones_like(grip_act_norm),  # 开
         )
-        # === push to live monitor ===
-        
+
         # D. 模仿惩罚 (Imitation Penalty)
         # 权重给大一点 (0.8)，让它从零开始时重视夹爪
         grip_error = torch.abs(grip_act_norm - target_grip)
-        g_close = torch.sigmoid((0.002 - e_lat) / (0.0005 + 1e-8)) * torch.sigmoid((0.002 - e_ax) / (0.001 + 1e-8))
+        g_close = torch.sigmoid((0.002 - e_lat) / (0.0005 + 1e-8)) * torch.sigmoid(
+            (0.002 - e_ax) / (0.001 + 1e-8)
+        )
         # 2. ✅ 核心修改：动态权重
         # g_close 是一个 0~1 的值，指示有多接近抓取条件
         # 远的时候 g_close -> 0, 权重 -> 0.1 (轻微引导)
         # 近的时候 g_close -> 1, 权重 -> 2.1 (强力纠正)
-        dynamic_weight = 0.1 + 2.0 * g_close 
+        dynamic_weight = 0.1 + 2.0 * g_close
 
         gripper_reward = -1.0 * dynamic_weight * grip_error
 
         # ------------------- 4) 约束与惩罚 -------------------
         wall_violation = torch.relu(r_e - (self.pipe_radius - self.pipe_safety_margin))
-        wall_penalty = -10.0 * (wall_violation ** 2)
+        wall_penalty = -10.0 * (wall_violation**2)
 
-        out_ax = torch.relu(-s_e) + torch.relu(s_e - (self.pipe_length - self.pipe_safety_margin))
+        out_ax = torch.relu(-s_e) + torch.relu(
+            s_e - (self.pipe_length - self.pipe_safety_margin)
+        )
         out_penalty = -3.0 * out_ax
 
         step_penalty = -0.01
@@ -632,29 +737,62 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         lift_success_thr = 0.005
         # 连续抬起奖励 (鼓励它越抬越高)
         lift_reward = 5.0 * torch.clamp(object_lift / lift_success_thr, 0.0, 1.0)
-        
-        success = (object_lift > lift_success_thr)
+
+        success = object_lift > lift_success_thr
         # self.terminated = success
         success_reward = 10.0 * success.float()
         # ------------------- 动作惩罚 -------------------
         dact = self.cur_actions - self.last_actions
-        smooth_pen = -0.05 * (dact[:, :4] ** 2).sum(dim=1) - 0.02 * (dact[:, 4] ** 2).squeeze(-1)
+        smooth_pen = -0.05 * (dact[:, :4] ** 2).sum(dim=1) - 0.02 * (
+            dact[:, 4] ** 2
+        ).squeeze(-1)
         self.last_actions = self.cur_actions.detach()
         jv = self._robot.data.joint_vel
-        vel_pen = -1e-3 * (jv ** 2).sum(dim=1)
+        vel_pen = -1e-3 * (jv**2).sum(dim=1)
+
+        transport_gate = torch.sigmoid((object_lift - self.goal_lift_thr) / 0.0008)
+        obj_goal_vec = self.goal_pos_w - obj_pos_w
+        obj_goal_dist = torch.norm(obj_goal_vec, dim=1)
+
+        # 搬运到目标点的 dense reward
+        goal_reward_coarse = torch.exp(-((obj_goal_dist / 0.020) ** 2))
+        goal_reward_fine = torch.exp(-((obj_goal_dist / 0.006) ** 2))
+        goal_reward = transport_gate * (
+            2.0 * goal_reward_coarse + 4.0 * goal_reward_fine
+        )
+        # 进度奖励：只要比上一步更接近 goal 就给正反馈
+        goal_progress = transport_gate * 2.0 * (self.prev_obj_goal_dist - obj_goal_dist)
+        self.prev_obj_goal_dist = obj_goal_dist.detach()
+
+        # 维持抓取，防止搬运中掉落
+        hold_bonus = transport_gate * 1.0 * is_captured_rule.float()
+
+        # 如果已经进入搬运阶段却掉了，给惩罚
+        drop_penalty = -5.0 * ((transport_gate > 0.5) & (~is_captured_rule)).float()
+
+        # 最终成功：物体到目标点附近，且仍被抬起/夹持
+        goal_success = (obj_goal_dist < self.goal_reach_thr) & (
+            object_lift > self.goal_lift_thr
+        )
+        goal_success_reward = 20.0 * goal_success.float()
         # ------------------- 总和 -------------------
         rewards = (
-            align_reward +
-            dist_reward +
-            gripper_reward +  # ✅ 现在的模仿奖励
-            wall_penalty +
-            out_penalty +
-            lift_reward +
-            success_reward +
-            yaw_reward +
-            step_penalty +
-            smooth_pen +
-            vel_pen
+            align_reward
+            + dist_reward
+            + gripper_reward  # ✅ 现在的模仿奖励
+            + wall_penalty
+            + out_penalty
+            + lift_reward
+            + success_reward
+            + yaw_reward
+            + step_penalty
+            + smooth_pen
+            + vel_pen
+            + goal_reward  # 新增
+            + goal_progress  # 新增
+            + hold_bonus  # 新增
+            + drop_penalty  # 新增
+            + goal_success_reward  # 新增
         )
         # self._push_live_metrics(rewards-success_reward-lift_reward, lift_reward)
         self.extras["log"] = {
@@ -666,6 +804,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             "reward/out_pen": out_penalty.mean(),
             "reward/lift": lift_reward.mean(),
             "reward/success": success_reward.mean(),
+            "goal_reward": goal_reward.mean(),
             "metrics/e_lat": e_lat.mean(),
             "metrics/e_ax": e_ax.mean(),
             "metrics/ee_dist": ee_dist.mean(),
@@ -677,11 +816,13 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             "metrics/g_yaw": g_yaw.mean(),
             "reward/smooth_pen": smooth_pen.mean(),
             "reward/vel_pen": vel_pen.mean(),
-            
         }
-        self.extras["pose"] = {"metrics/pose_command": self.pose_command_w[0,:],}
+        self.extras["pose"] = {
+            "metrics/pose_command": self.pose_command_w[0, :],
+        }
         # Log (略，保持你原来的) ...
         return rewards
+
     # ------------------------------------------------------------------
     # reset 环节
     # ------------------------------------------------------------------
@@ -690,23 +831,17 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             return
         env_ids = env_ids.to(self.device).long().view(-1)
 
-        # 统计 reset 间隔（可选）
         now = torch.tensor(time.perf_counter(), device=self.device, dtype=torch.float64)
         prev = self.last_reset_t.index_select(0, env_ids)
         gap = torch.where(torch.isnan(prev), prev, now - prev)
         self.last_reset_t.index_fill_(0, env_ids, now)
         self.reset_interval.scatter_(0, env_ids, gap)
 
-        # 初始化 IK（第一次 reset 时）
-        if not hasattr(self, "_robot_ik"):
-            self._robot_ik = DifferentialInverseKinematicsAction(self.cfg.left_robot_ik, self.scene)
-
         super()._reset_idx(env_ids)
         self.episode_length_buf[env_ids] = 0
 
-        # 机器人
+        # robot reset
         self._robot.reset(env_ids)
-        self._robot_ik.reset(env_ids)
 
         default_root_state = self._robot.data.default_root_state[env_ids].clone()
         default_root_state[:, :3] += self.scene.env_origins[env_ids]
@@ -716,53 +851,84 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         joint_vel = torch.zeros_like(joint_pos)
+
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
         self._robot.set_joint_position_target(joint_pos, env_ids=env_ids)
         self._robot.set_joint_velocity_target(joint_vel, env_ids=env_ids)
 
-        # 物体
+        # object reset
         if not hasattr(self, "pose_command_w"):
             self.pose_command_w = torch.zeros(self.num_envs, 7, device=self.device)
-            self.pose_command_w[:, 3] = 1.0  # identity quat
+            self.pose_command_w[:, 3] = 1.0
 
         self._resample_command(env_ids)
         self._object.write_root_pose_to_sim(self.pose_command_w[env_ids, :], env_ids=env_ids)
         self._object.write_root_velocity_to_sim(
-            torch.zeros_like(self._object.data.root_vel_w[env_ids, :]), env_ids=env_ids
+            torch.zeros_like(self._object.data.root_vel_w[env_ids, :]),
+            env_ids=env_ids,
         )
 
-        # 末端目标 & 抓手命令重置
+        # 更新目标末端状态
         ee_state = self._robot.data.body_state_w[:, self.ee_id]
         self.ee_target_pos_w[env_ids] = ee_state[env_ids, 0:3]
         self.ee_target_quat_w[env_ids] = ee_state[env_ids, 3:7]
-        self.gripper_cmd[env_ids] = -0.10
-
-        # yaw 从 0 开始
+        self.ee_nominal_quat_w[env_ids] = ee_state[env_ids, 3:7]
         self.ee_target_yaw[env_ids] = 0.0
 
-        self.scene.write_data_to_sim()
+        # gripper reset
+        self.gripper_cmd[env_ids] = -0.10
 
-    def check_object_in_gripper(self, p_obj_w, p_fix_w, p_mov_w, 
-                                margin=0.000,       # 1mm, 避开铰链根部和刀尖边缘
-                                radius_thr=0.004):  # 4mm, 允许的横向偏差半径
+        # goal reset
+        self.goal_pos_w[env_ids] = self.goal_pos_local.unsqueeze(0) + self.scene.env_origins[env_ids]
+        obj_pos_w = self._object.data.body_pos_w[env_ids, 0, :3]
+        self.prev_obj_goal_dist[env_ids] = torch.norm(
+            obj_pos_w - self.goal_pos_w[env_ids], dim=1
+        )
+
+        # reset OSC internal state
+        self._osc.reset()
+
+        # 当前 ee pose 作为初始 command，避免 reset 后第一拍乱冲
+        root_pos_w = self._robot.data.root_state_w[:, :3]
+        root_quat_w = self._robot.data.root_state_w[:, 3:7]
+        pos_b, quat_b = math_utils.subtract_frame_transforms(
+            root_pos_w,
+            root_quat_w,
+            self.ee_target_pos_w,
+            self.ee_target_quat_w,
+        )
+        self.osc_cmd[env_ids] = torch.cat([pos_b[env_ids], quat_b[env_ids]], dim=-1)
+
+        # 清零 arm effort buffer
+        self.arm_effort_cmd[env_ids] = 0.0
+
+        self.scene.write_data_to_sim()
+    def check_object_in_gripper(
+        self,
+        p_obj_w,
+        p_fix_w,
+        p_mov_w,
+        margin=0.000,  # 1mm, 避开铰链根部和刀尖边缘
+        radius_thr=0.004,
+    ):  # 4mm, 允许的横向偏差半径
         """
         判断物体是否在夹爪的“捕获区域”内。
-        
+
         参数:
         - margin: 纵向容差。防止物体太靠根部（夹不住）或太靠尖端（容易滑）。
         - radius_thr: 横向容差。物体离中心线多远算“在里面”。
                     通常设为：(最大张开宽度 / 2) 或者 (当前张开宽度 / 2)。
         """
-        
+
         # --- 1. 构建夹爪中心轴线向量 ---
         v_gap = p_mov_w - p_fix_w
         gap_len = torch.norm(v_gap, dim=1, keepdim=True)  # 夹爪当前长度
-        gap_dir = v_gap / (gap_len + 1e-8)                # 单位方向向量
+        gap_dir = v_gap / (gap_len + 1e-8)  # 单位方向向量
 
         # --- 2. 纵向投影 (Projection) ---
         # 计算物体在轴线上的投影位置 t (物理单位: 米)
         v_obj = p_obj_w - p_fix_w
-        t_proj = torch.sum(v_obj * gap_dir, dim=1, keepdim=True) 
+        t_proj = torch.sum(v_obj * gap_dir, dim=1, keepdim=True)
 
         # 判定 A：物体是否在纵向有效范围内
         # margin < 投影位置 < (总长 - margin)
@@ -781,8 +947,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 必须同时满足：既在长度范围内，又在宽度范围内
         is_inside = is_within_length & is_within_radius
 
-        return is_inside.squeeze(-1) # 返回布尔值 Tensor (N,)
-    
+        return is_inside.squeeze(-1)  # 返回布尔值 Tensor (N,)
 
     # 辅助函数：提取 yaw (为了复用，建议放在类里或者 utils 里，这里写在 obs 里也可以)
     def _get_yaw_diff(self, ee_q, obj_q):
@@ -791,39 +956,46 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             siny_cosp = 2.0 * (w * z + x * y)
             cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
             return torch.atan2(siny_cosp, cosy_cosp)
+
         y1 = quat_to_yaw(ee_q)
         y2 = quat_to_yaw(obj_q)
         dy = y1 - y2
-        return torch.atan2(torch.sin(dy), torch.cos(dy)) # wrap to -pi, pi
+        return torch.atan2(torch.sin(dy), torch.cos(dy))  # wrap to -pi, pi
 
     def _get_observations(self) -> dict:
         # ---------------- 基础数据获取 ----------------
         ee_state = self._robot.data.body_state_w[:, self.ee_id]
         ee_pos_w = ee_state[:, 0:3]
-        ee_quat_w = ee_state[:, 3:7] # ✅ 需要四元数算 Yaw
+        ee_quat_w = ee_state[:, 3:7]  # ✅ 需要四元数算 Yaw
 
         obj_state = self._object.data.body_state_w[:, 0]
         obj_pos_w = obj_state[:, 0:3]
-        obj_quat_w = obj_state[:, 3:7] # ✅ 需要四元数
+        obj_quat_w = obj_state[:, 3:7]  # ✅ 需要四元数
 
         # ---------------- 管道坐标转换 ----------------
         s_e, r_e, th_e, _, _ = self._world_to_pipe_coords(ee_pos_w)
         s_o, r_o, th_o, _, _ = self._world_to_pipe_coords(obj_pos_w)
 
-        s_e = s_e.squeeze(-1); r_e = r_e.squeeze(-1); th_e = th_e.squeeze(-1)
-        s_o = s_o.squeeze(-1); r_o = r_o.squeeze(-1); th_o = th_o.squeeze(-1)
+        s_e = s_e.squeeze(-1)
+        r_e = r_e.squeeze(-1)
+        th_e = th_e.squeeze(-1)
+        s_o = s_o.squeeze(-1)
+        r_o = r_o.squeeze(-1)
+        th_o = th_o.squeeze(-1)
 
         # ---------------- 相对量计算 ----------------
         ds = s_o - s_e
         dr = r_o - r_e
         dth = th_o - th_e
-        
+
         # ✅ 新增：Yaw 角度差 (必须加，否则 yaw_reward 没法学)
         dyaw = self._get_yaw_diff(ee_quat_w, obj_quat_w)
 
         # ---------------- 几何误差 (用于计算引导信号) ----------------
-        x_e = r_e * torch.cos(th_e); y_e = r_e * torch.sin(th_e)
-        x_o = r_o * torch.cos(th_o); y_o = r_o * torch.sin(th_o)
+        x_e = r_e * torch.cos(th_e)
+        y_e = r_e * torch.sin(th_e)
+        x_o = r_o * torch.cos(th_o)
+        y_o = r_o * torch.sin(th_o)
         e_lat = torch.sqrt((x_e - x_o) ** 2 + (y_e - y_o) ** 2 + 1e-8)
         e_ax = torch.abs(ds)
 
@@ -833,66 +1005,83 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         g_lat_obs = torch.sigmoid((0.001 - e_lat) / 0.0007)
         # 2. 抓取条件进度 (0~1)
         g_close_obs = torch.sigmoid((0.002 - e_ax) / 0.001) * g_lat_obs
-        
+
         # ✅ 新增：物体抬起高度 (结果反馈)
         init_z = self._object.data.default_root_state[:, 2]
         obj_z = obj_pos_w[:, 2] - self.scene.env_origins[:, 2]
-        object_lift = obj_z - init_z # 不 clamp，允许看到负值（压入地下）
+        object_lift = obj_z - init_z  # 不 clamp，允许看到负值（压入地下）
 
         # ---------------- 其他特征 ----------------
         # 三角函数编码
-        sin_th_e = torch.sin(th_e); cos_th_e = torch.cos(th_e)
-        sin_dth = torch.sin(dth);   cos_dth = torch.cos(dth)
-        sin_dyaw = torch.sin(dyaw); cos_dyaw = torch.cos(dyaw) # ✅
+        sin_th_e = torch.sin(th_e)
+        cos_th_e = torch.cos(th_e)
+        sin_dth = torch.sin(dth)
+        cos_dth = torch.cos(dth)
+        sin_dyaw = torch.sin(dyaw)
+        cos_dyaw = torch.cos(dyaw)  # ✅
 
         # 状态标志
         margin_to_wall = (self.pipe_radius - r_e).unsqueeze(-1)
-        
+
         # 归一化位置
 
         # 关节与夹爪
         joint_pos = self._robot.data.joint_pos - self._robot.data.default_joint_pos
         joint_vel = self._robot.data.joint_vel - self._robot.data.default_joint_vel
-        grip_norm = (self.gripper_cmd - self.gripper_min) / (self.gripper_max - self.gripper_min + 1e-6)
+        grip_norm = (self.gripper_cmd - self.gripper_min) / (
+            self.gripper_max - self.gripper_min + 1e-6
+        )
         # 计算几何规则 (复用之前的逻辑)
         p_fix_w = self._robot.data.body_pos_w[:, self.ee_fixed_id, 0:3]
         p_mov_w = self._robot.data.body_pos_w[:, self.ee_move_id, 0:3]
         # 这是一个布尔值 Tensor (N,)
         is_captured_bool = self.check_object_in_gripper(obj_pos_w, p_fix_w, p_mov_w)
-        
+
         # 转为 float (0.0 或 1.0)
         is_captured_obs = is_captured_bool.float().unsqueeze(-1)
+        goal_vec_obj = self.goal_pos_w - obj_pos_w  # (N,3)
+        goal_vec_ee = self.goal_pos_w - ee_pos_w  # (N,3)
+        obj_goal_dist = torch.norm(goal_vec_obj, dim=1, keepdim=True)
+        ee_goal_dist = torch.norm(goal_vec_ee, dim=1, keepdim=True)
         # ---------------- 拼接 ----------------
         obs = torch.cat(
             (
-                # 1. 自身状态 (Proprioception)
-                s_e.unsqueeze(-1), r_e.unsqueeze(-1),
-                cos_th_e.unsqueeze(-1), sin_th_e.unsqueeze(-1),
-                joint_pos, joint_vel,
+                # 1. 自身状态
+                s_e.unsqueeze(-1),
+                r_e.unsqueeze(-1),
+                cos_th_e.unsqueeze(-1),
+                sin_th_e.unsqueeze(-1),
+                joint_pos,
+                joint_vel,
                 grip_norm,
-
-                # 2. 目标相对状态 (Goal Relative)
-                ds.unsqueeze(-1), dr.unsqueeze(-1),
-                cos_dth.unsqueeze(-1), sin_dth.unsqueeze(-1),
-                cos_dyaw.unsqueeze(-1), sin_dyaw.unsqueeze(-1), # ✅ 加了 Yaw
-                
-                # 3. 任务进度指示器 (Task Progress) - 关键！
-                object_lift.unsqueeze(-1), # ✅ 告诉它提起来没
-                g_lat_obs.unsqueeze(-1),   # ✅ 告诉它对齐没
-                g_close_obs.unsqueeze(-1), # ✅ 告诉它能抓没
+                # 2. 相对目标状态（原来的物体相对末端）
+                ds.unsqueeze(-1),
+                dr.unsqueeze(-1),
+                cos_dth.unsqueeze(-1),
+                sin_dth.unsqueeze(-1),
+                cos_dyaw.unsqueeze(-1),
+                sin_dyaw.unsqueeze(-1),
+                # 3. 任务进度
+                object_lift.unsqueeze(-1),
+                g_lat_obs.unsqueeze(-1),
+                g_close_obs.unsqueeze(-1),
                 is_captured_obs,
-
-                # 4. 环境感知 (Environment)
+                # 4. 新增：goal conditioning
+                goal_vec_obj,  # 物体到目标点
+                goal_vec_ee,  # 末端到目标点（可选，但通常有帮助）
+                obj_goal_dist,
+                ee_goal_dist,
+                # 5. 环境约束
                 margin_to_wall,
-                # in_pipe.unsqueeze(-1),
             ),
             dim=-1,
         )
-
         state = torch.clamp(obs, -5.0, 5.0).to(torch.float32)
 
         is_first = (self.episode_length_buf == 0).to(torch.int32)
         zeros = torch.zeros_like(is_first)
+
+        # rgb = self.get_image_observation(data_type="rgb")[..., :3]  # [N,H,W,3]
 
         obs = {
             "policy": state,
@@ -902,9 +1091,10 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             "failure": zeros,
         }
         if self._use_image_obs():
-            obs["image"] = self.get_image_observation(data_type="rgb")[..., :3]  # [N,H,W,3]
+            obs["image"] = self.get_image_observation(data_type="rgb")[
+                ..., :3
+            ]  # [N,H,W,3]
         return obs
-
 
     def get_image_observation(
         self,
@@ -912,23 +1102,20 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         convert_perspective_to_orthogonal: bool = False,
         normalize: bool = True,
         # Dreamer 常用：回放存 uint8；训练时再转 float/归一化
-        rgb_mode: str = "float-11",     # "uint8" | "float01" | "float-11"
-        depth_mode: str = "float01", # "float01" | "uint8"
-        max_depth: float = 10.0,     # 你环境里合理的深度上限，按需调
-        output_chw: bool = False,    # True -> (N,C,H,W); False -> (N,H,W,C)
+        rgb_mode: str = "float-11",  # "uint8" | "float01" | "float-11"
+        depth_mode: str = "float01",  # "float01" | "uint8"
+        max_depth: float = 10.0,  # 你环境里合理的深度上限，按需调
+        output_chw: bool = False,  # True -> (N,C,H,W); False -> (N,H,W,C)
     ) -> torch.Tensor:
-        if not self._use_image_obs():
-            raise RuntimeError("Image observations are disabled. Set cfg.use_image_obs=True to enable camera/image data.")
-
-        if "Camera" not in self.scene.sensors:
-            raise RuntimeError("Camera sensor is not initialized in scene.sensors.")
 
         sensor = self.scene.sensors["Camera"]
         images = sensor.data.output[data_type]
 
         # depth image conversion
         if (data_type == "distance_to_camera") and convert_perspective_to_orthogonal:
-            images = math_utils.orthogonalize_perspective_depth(images, sensor.data.intrinsic_matrices)
+            images = math_utils.orthogonalize_perspective_depth(
+                images, sensor.data.intrinsic_matrices
+            )
 
         # ---------- RGB ----------
         if data_type == "rgb":
@@ -987,30 +1174,18 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 其他类型：原样返回（或你自行加分支）
         return images.clone()
 
-
-    def _get_boundary_contact_forces(self):
-        pipe_fm = self.scene.sensors["pipe_contact"].data.force_matrix_w
-        bottom_fm = self.scene.sensors["bottom_contact"].data.force_matrix_w
-
-        pipe_fm = torch.nan_to_num(pipe_fm, nan=0.0)
-        bottom_fm = torch.nan_to_num(bottom_fm, nan=0.0)
-
-        # 对 body维、filter维求和
-        pipe_force_vec = pipe_fm.sum(dim=(1, 2))      # [N, 3]
-        bottom_force_vec = bottom_fm.sum(dim=(1, 2))  # [N, 3]
-
-        pipe_force = torch.linalg.norm(pipe_force_vec, dim=-1)
-        bottom_force = torch.linalg.norm(bottom_force_vec, dim=-1)
-
-        return pipe_force_vec, bottom_force_vec, pipe_force, bottom_force
     # ------------------------------------------------------------------
     # debug 可视化
     # ------------------------------------------------------------------
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
             if not hasattr(self, "goal_pose_visualizer"):
-                self.goal_pose_visualizer = VisualizationMarkers(self.cfg.goal_pose_visualizer_cfg)
-                self.current_pose_visualizer = VisualizationMarkers(self.cfg.current_pose_visualizer_cfg)
+                self.goal_pose_visualizer = VisualizationMarkers(
+                    self.cfg.goal_pose_visualizer_cfg
+                )
+                self.current_pose_visualizer = VisualizationMarkers(
+                    self.cfg.current_pose_visualizer_cfg
+                )
             self.goal_pose_visualizer.set_visibility(True)
             self.current_pose_visualizer.set_visibility(True)
             # === 新增：5mm 范围球 visualizer ===
@@ -1032,7 +1207,9 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             if self._debug_vis_handle is None:
                 app_interface = omni.kit.app.get_app_interface()
                 self._debug_vis_handle = app_interface.get_post_update_event_stream().create_subscription_to_pop(
-                    lambda event, obj=weakref.proxy(self): obj._debug_vis_callback(event)
+                    lambda event, obj=weakref.proxy(self): obj._debug_vis_callback(
+                        event
+                    )
                 )
         else:
             if self._debug_vis_handle is not None:
@@ -1052,18 +1229,23 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # === 新增：object 5mm 范围球 ===
         if hasattr(self, "range_visualizer"):
             # 取 object 的世界位姿
-            obj_state_w = self._object.data.body_state_w[:, 0]   # (num_envs, 13?) 取第0刚体
+            obj_state_w = self._object.data.body_state_w[
+                :, 0
+            ]  # (num_envs, 13?) 取第0刚体
             obj_pos_w = obj_state_w[:, 0:3]
 
             # 若你的 range_vis cfg 里只有一个 marker prototype（sphere）
             # 强烈建议显式传 marker_indices
 
             # self.range_visualizer.visualize(obj_pos_w, obj_quat_w, marker_indices=idx)
+
     # ------------------------------------------------------------------
     # 其它工具函数
     # ------------------------------------------------------------------
     def init_robot_ik(self):
-        self._robot_ik = DifferentialInverseKinematicsAction(self.cfg.left_robot_ik, self.scene)
+        self._robot_ik = DifferentialInverseKinematicsAction(
+            self.cfg.left_robot_ik, self.scene
+        )
 
     def get_pipe_top_pose(self):
         # 将配置中的 tuple 转成 tensor（只在运行时做）
@@ -1098,153 +1280,3 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         delta = ee_pos - self.pipe_top_pos
         d_axial = torch.sum(delta * self.u_axis, dim=1)
         return d_axial
-
-    def get_ee_pos_w(self):
-        return self._robot.data.body_pos_w[:, self.ee_id, 0:3]
-
-    # ------------------------------------------------------------------
-    # Live UI monitor (omni.ui) : object_lift & gripper_reward
-    # ------------------------------------------------------------------
-    def _init_live_monitor(self, enable: bool = True, history_len: int = 240, env_index: int | None = None):
-        """Create a small UI window to monitor variables in real-time (GUI mode only)."""
-        self._live_enabled = False
-        self._live_env_index = env_index
-        self._live_N = int(history_len)
-
-        # ring buffers (python floats)
-        self._live_lift = [0.0] * self._live_N
-        self._live_grip = [0.0] * self._live_N
-        self._live_ptr = 0
-        self._live_filled = 0
-
-        self._live_last_lift = 0.0
-        self._live_last_grip = 0.0
-
-        if not enable:
-            return
-
-        # If running headless, omni.ui may exist but window won't be visible; keep it safe.
-        try:
-            self._live_window = ui.Window("RL Live Monitor", width=420, height=260, visible=True)
-        except Exception:
-            return
-
-        with self._live_window.frame:
-            with ui.VStack(spacing=6):
-                ui.Label("Ur3LiftNeedleEnv - Live Metrics", height=20)
-                self._lbl_lift = ui.Label("object_lift: 0.0000 m")
-                self._lbl_grip = ui.Label("gripper_reward: 0.0000")
-
-                ui.Separator(height=2)
-
-                ui.Label(f"History (last {self._live_N} steps)")
-                # You can tune scales to your task
-                self._plot_lift = ui.Plot(
-                    ui.Type.LINE2D, 0.0, 0.02, height=70, title="object_lift (m)",
-                    style={"color": ui.color.white},
-                )
-                self._plot_grip = ui.Plot(
-                    ui.Type.LINE2D, -2.5, 0.5, height=70, title="gripper_reward",
-                    style={"color": ui.color.white},
-                )
-
-                self._live_step = 0
-                self._live_dirty = True
-                self._live_autoscale = True      # 开关
-                self._live_pad_ratio = 0.15      # 上下留白比例（15%）
-                self._live_min_span_lift = 1e-4  # lift 的最小显示跨度（防止贴成一条线）
-                self._live_min_span_grip = 1e-2  # gripper_reward 的最小显示跨度
-
-        # Subscribe a UI refresh callback (runs every render frame)
-        app_interface = omni.kit.app.get_app_interface()
-        self._live_handle = app_interface.get_post_update_event_stream().create_subscription_to_pop(
-            lambda event, obj=weakref.proxy(self): obj._update_live_monitor_ui()
-        )
-
-        self._live_enabled = True
-
-    def _push_live_metrics(self, object_lift: torch.Tensor, gripper_reward: torch.Tensor):
-        """Push latest metrics (called from _get_rewards). Keep it lightweight."""
-        if not getattr(self, "_live_enabled", False):
-            return
-
-        # Select env index or mean over all envs
-        with torch.no_grad():
-            if self._live_env_index is None:
-                lift_v = float(object_lift.detach().mean().item())
-                grip_v = float(gripper_reward.detach().mean().item())
-            else:
-                idx = int(self._live_env_index)
-                lift_v = float(object_lift.detach()[idx].item())
-                grip_v = float(gripper_reward.detach()[idx].item())
-
-        self._live_last_lift = lift_v
-        self._live_last_grip = grip_v
-
-        # ring buffer write
-        self._live_lift[self._live_ptr] = lift_v
-        self._live_grip[self._live_ptr] = grip_v
-        self._live_ptr = (self._live_ptr + 1) % self._live_N
-        self._live_filled = min(self._live_filled + 1, self._live_N)
-
-        self._live_step += 1
-        self._live_dirty = True
-
-    def _update_live_monitor_ui(self):
-        """UI thread callback: update labels."""
-        if not getattr(self, "_live_enabled", False):
-            return
-        if not hasattr(self, "_lbl_lift"):
-            return
-
-        # Text update (cheap)
-        if self._live_env_index is None:
-            prefix = f"(mean over {self.num_envs} envs)"
-        else:
-            prefix = f"(env {self._live_env_index})"
-
-        self._lbl_lift.text = f"object_lift {prefix}: {self._live_last_lift:.5f} m"
-        self._lbl_grip.text = f"gripper_reward {prefix}: {self._live_last_grip:.5f}"
-        if not getattr(self, "_live_dirty", False):
-            return
-        self._live_dirty = False
-
-        N = self._live_N
-        filled = self._live_filled
-        if filled <= 1:
-            return
-
-        # 取出按时间顺序的 y 序列
-        if filled < N:
-            lift_y = self._live_lift[:filled]
-            grip_y = self._live_grip[:filled]
-        else:
-            start = self._live_ptr  # oldest
-            lift_y = [self._live_lift[(start + i) % N] for i in range(N)]
-            grip_y = [self._live_grip[(start + i) % N] for i in range(N)]
-
-        # x 用全局 step（最后一个点是 live_step-1）
-        x0 = self._live_step - filled
-        xs = [float(x0 + i) for i in range(filled)]
-
-        self._plot_lift.set_xy_data(list(zip(xs, lift_y)))
-        self._plot_grip.set_xy_data(list(zip(xs, grip_y)))
-
-        if self._live_autoscale:
-            # ----- lift autoscale -----
-            lmin = float(min(lift_y))
-            lmax = float(max(lift_y))
-            lspan = lmax - lmin
-            lspan = max(lspan, self._live_min_span_lift)  # 防止跨度太小看不出来
-            lpad = lspan * self._live_pad_ratio
-            self._plot_lift.scale_min = max(0.0, lmin - lpad)  # lift 通常不想看负值
-            self._plot_lift.scale_max = lmax + lpad
-
-            # ----- gripper autoscale -----
-            gmin = float(min(grip_y))
-            gmax = float(max(grip_y))
-            gspan = gmax - gmin
-            gspan = max(gspan, self._live_min_span_grip)
-            gpad = gspan * self._live_pad_ratio
-            self._plot_grip.scale_min = gmin - gpad
-            self._plot_grip.scale_max = gmax + gpad

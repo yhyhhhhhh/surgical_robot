@@ -1,10 +1,10 @@
-from typing import List, Tuple, TypeVar
+import math
 import torch
 import torch.nn.functional as F
-from torch import nn
 from abc import ABC, abstractmethod
-from typing import Optional
-import math
+from torch import nn
+from typing import List, Optional, Tuple, TypeVar
+
 
 class Transform(nn.Module, ABC):
     """

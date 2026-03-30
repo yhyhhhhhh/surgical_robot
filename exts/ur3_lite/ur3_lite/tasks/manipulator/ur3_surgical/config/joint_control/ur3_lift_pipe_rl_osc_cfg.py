@@ -50,20 +50,20 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     # scene
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=5.0, replicate_physics=True)
 
-    
-    # robot
+        
     left_robot = ArticulationCfg(
         prim_path="/World/envs/env_.*/Left_Robot",
         spawn=sim_utils.UsdFileCfg(
-            # usd_path=f"/home/yhy/DVRK/ur3_scissor/ur3TipCam_pro1_1.usd",
-            usd_path=f"exts/ur3_lite/ur3_lite/tasks/manipulator/ur3_surgical/assets/ur3TipCam_pro1_1_v0_debug.usd",
+            usd_path="exts/ur3_lite/ur3_lite/tasks/manipulator/ur3_surgical/assets/ur3TipCam_pro1_1_v0_debug.usd",
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                disable_gravity=True,
+                disable_gravity=False,   # 真实重力下做 OSC
                 max_depenetration_velocity=5.0,
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=False, solver_position_iteration_count=32, solver_velocity_iteration_count=8
+                enabled_self_collisions=False,
+                solver_position_iteration_count=32,
+                solver_velocity_iteration_count=8,
             ),
             collision_props=sim_utils.CollisionPropertiesCfg(),
         ),
@@ -75,21 +75,24 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
                 "wrist_1_joint": 1.2720,
                 "wrist_2_joint": -0.1490,
                 "wrist_3_joint": -1.5632,
-                "tip_joint":-0.1000,
+                "tip_joint": -0.1000,
             },
-            pos=(0.15, -0.55, -0.16), rot=(1, 0.0, 0.0, 0.0),
+            pos=(0.15, -0.55, -0.16),
+            rot=(1.0, 0.0, 0.0, 0.0),
         ),
         actuators={
+            # arm 由 OSC 直接输出 effort，所以这里别再用高刚度位置驱动
             "arm": ImplicitActuatorCfg(
                 joint_names_expr=[
-                    "shoulder_pan_joint","shoulder_lift_joint","elbow_joint",
-                    "wrist_1_joint","wrist_2_joint","wrist_3_joint"
+                    "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+                    "wrist_1_joint", "wrist_2_joint", "wrist_3_joint",
                 ],
                 velocity_limit=3.0,
-                effort_limit=100.0,          # ② 扭矩上限调高
-                stiffness=800.0,            # ③ KP/KD 更硬
-                damping=80.0,
+                effort_limit=80.0,   # 建议起点，可再调
+                stiffness=0.0,
+                damping=0.0,
             ),
+            # gripper / tip 先继续保留位置式控制
             "tip": ImplicitActuatorCfg(
                 joint_names_expr=["tip_joint"],
                 velocity_limit=3.0,
@@ -99,20 +102,7 @@ class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
             ),
         },
     )
-    
-    left_robot_ik = DifferentialInverseKinematicsActionCfg(
-        asset_name="left_robot",
-        joint_names=[
-            "shoulder_pan_joint",
-            "shoulder_lift_joint",
-            "elbow_joint",
-            "wrist_1_joint",
-            "wrist_2_joint",
-            "wrist_3_joint",
-        ],
-        body_name = "scissors_tip",
-        controller=DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls")
-    )
+
     
     # camera = CameraCfg( 
     #     prim_path="/World/envs/env_.*/Left_Robot/ur3_robot/camera_link/Camera",

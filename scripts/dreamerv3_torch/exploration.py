@@ -1,13 +1,13 @@
-import torch
-from torch import nn
-from torch import distributions as torchd
-
 import sys
+import torch
+from torch import distributions as torchd
+from torch import nn
+
 sys.path.append('latent_safety')
 
+import dreamerv3_torch.models as models
 import dreamerv3_torch.networks as networks
 import dreamerv3_torch.tools as tools
-import dreamerv3_torch.models as models
 
 
 class Random(nn.Module):

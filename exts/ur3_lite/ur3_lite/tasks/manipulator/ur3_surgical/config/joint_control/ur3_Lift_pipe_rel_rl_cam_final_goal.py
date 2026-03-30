@@ -623,13 +623,13 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         
         success = (object_lift > lift_success_thr)
         # self.terminated = success
-        success_reward = 10.0 * success.float()
+        success_reward = 5.0 * success.float()
         # ------------------- 动作惩罚 -------------------
         dact = self.cur_actions - self.last_actions
         smooth_pen = -0.05 * (dact[:, :4] ** 2).sum(dim=1) - 0.02 * (dact[:, 4] ** 2).squeeze(-1)
         self.last_actions = self.cur_actions.detach()
         jv = self._robot.data.joint_vel
-        vel_pen = -1e-3 * (jv ** 2).sum(dim=1)
+        vel_pen = -1e-2 * (jv ** 2).sum(dim=1)
 
         transport_gate = torch.sigmoid((object_lift - self.goal_lift_thr) / 0.0008)
         obj_goal_vec = self.goal_pos_w - obj_pos_w
@@ -638,8 +638,8 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 搬运到目标点的 dense reward
         goal_reward_coarse = torch.exp(- (obj_goal_dist / 0.020) ** 2)
         goal_reward_fine   = torch.exp(- (obj_goal_dist / 0.006) ** 2)
-        goal_reward = transport_gate * (2.0 * goal_reward_coarse + 4.0 * goal_reward_fine)
-        print(object_lift,obj_goal_dist,success)
+        goal_reward = 5  * (2.0 * goal_reward_coarse + 4.0 * goal_reward_fine)
+        # print(object_lift,obj_goal_dist,success)
 
         # 进度奖励：只要比上一步更接近 goal 就给正反馈
         goal_progress = transport_gate * 2.0 * (self.prev_obj_goal_dist - obj_goal_dist)
@@ -653,7 +653,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         # 最终成功：物体到目标点附近，且仍被抬起/夹持
         goal_success = (obj_goal_dist < self.goal_reach_thr) & (object_lift > self.goal_lift_thr)
-        goal_success_reward = 20.0 * goal_success.float()
+        goal_success_reward = 10.0 * goal_success.float()
         # ------------------- 总和 -------------------
         rewards = (
             align_reward +
@@ -662,15 +662,15 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             wall_penalty +
             out_penalty +
             lift_reward +
-            success_reward +
+            # success_reward +
             yaw_reward +
             step_penalty +
             smooth_pen +
             vel_pen +
             goal_reward +          # 新增
-            goal_progress +        # 新增
+            # goal_progress +        # 新增
             hold_bonus +           # 新增
-            drop_penalty +         # 新增
+            # drop_penalty +         # 新增
             goal_success_reward    # 新增
         )
         # self._push_live_metrics(rewards-success_reward-lift_reward, lift_reward)
@@ -684,6 +684,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             "reward/lift": lift_reward.mean(),
             "reward/success": success_reward.mean(),
             "goal_reward": goal_reward.mean(),
+            "goal_reward": goal_success_reward.mean(),
             "metrics/e_lat": e_lat.mean(),
             "metrics/e_ax": e_ax.mean(),
             "metrics/ee_dist": ee_dist.mean(),

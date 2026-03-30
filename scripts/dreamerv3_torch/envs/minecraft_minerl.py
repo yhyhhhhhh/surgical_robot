@@ -1,12 +1,12 @@
 from minerl.herobraine.env_spec import EnvSpec
-from minerl.herobraine.hero import handler
-from minerl.herobraine.hero import handlers
-from minerl.herobraine.hero import mc
+from minerl.herobraine.hero import handler, handlers, mc
 from minerl.herobraine.hero.mc import INVERSE_KEYMAP
 
 
 def edit_options(**kwargs):
-    import os, pathlib, re
+    import os
+    import pathlib
+    import re
 
     for word in os.popen("pip3 --version").read().split(" "):
         if "-packages/pip" in word:

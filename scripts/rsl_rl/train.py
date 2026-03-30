@@ -6,7 +6,6 @@
 """Script to train RL agent with RSL-RL."""
 
 """Launch Isaac Sim Simulator first."""
-import cv2
 import argparse
 import sys
 
@@ -63,6 +62,7 @@ import os
 import torch
 from datetime import datetime
 
+from omni.isaac.core.utils.extensions import enable_extension
 from rsl_rl.runners import OnPolicyRunner
 
 from omni.isaac.lab.envs import (
@@ -77,12 +77,12 @@ from omni.isaac.lab.utils.io import dump_pickle, dump_yaml
 from omni.isaac.lab_tasks.utils import get_checkpoint_path
 from omni.isaac.lab_tasks.utils.hydra import hydra_task_config
 from omni.isaac.lab_tasks.utils.wrappers.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
-import omni.log
+
 # Import extensions to set up environment tasks
-import ur3_lite
-from omni.isaac.core.utils.extensions import enable_extension
+import ur3_lite  # noqa: F401
+
 enable_extension("omni.isaac.debug_draw")
-import omni.isaac.debug_draw._debug_draw as omni_debug_draw
+
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False

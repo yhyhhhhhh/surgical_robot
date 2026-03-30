@@ -1,8 +1,7 @@
-import logging
-import threading
-
-import numpy as np
 import gym
+import logging
+import numpy as np
+import threading
 
 
 class MinecraftBase(gym.Env):

@@ -1,10 +1,11 @@
-import cv2
 import argparse
+
 from omni.isaac.lab.app import AppLauncher
+
 import cli_args  # isort: skip
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument(
-    "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
+    "--disable_fabric", action="store_true", default=False, help="Disable fabric afnd use USD I/O operations."
 )
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default="Ur3Lite-PipeRelCamFinalGoal-Ik-RL-Direct-v0", help="Name of the task.")
@@ -16,23 +17,19 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import gymnasium as gym
-import os
 import torch
-from rsl_rl.runners import OnPolicyRunner
-from omni.isaac.lab.envs import DirectMARLEnv, multi_agent_to_single_agent
-from omni.isaac.lab.utils.dict import print_dict
-from omni.isaac.lab_tasks.utils import get_checkpoint_path, parse_env_cfg
-from omni.isaac.lab_tasks.utils.wrappers.rsl_rl import (
-    RslRlOnPolicyRunnerCfg,
-    RslRlVecEnvWrapper,
-    export_policy_as_jit,
-    export_policy_as_onnx,
-)
-from omni.isaac.core.utils.extensions import enable_extension
+
 import my_ur3_project.tasks  # noqa: F401
+from omni.isaac.core.utils.extensions import enable_extension
+
+from omni.isaac.lab_tasks.utils import parse_env_cfg
+from omni.isaac.lab_tasks.utils.wrappers.rsl_rl import RslRlVecEnvWrapper
+
 enable_extension("omni.isaac.debug_draw")
-import omni.isaac.debug_draw._debug_draw as omni_debug_draw
-import ur3_lite
+
+import ur3_lite  # noqa: F401
+
+
 def main():
 
     # 1) build env
@@ -56,7 +53,7 @@ def main():
     obs, _ = env.get_observations()
     timestep = 0
     # 在循环外定义噪声的幅度（标准差），你可以根据需要调整这个值
-    noise_scale = 10.0
+    noise_scale = 0.0
 
     while simulation_app.is_running():
         with torch.inference_mode():
@@ -69,12 +66,10 @@ def main():
             # 1. 获取策略输出的原始动作
             actions = policy(obs_t)
             
-            # 2. 生成并添加高斯噪声
+            # 2. 生成并添加高斯噪声f
             # torch.randn_like 生成均值为0，方差为1的标准正态分布张量
             noise = torch.zeros_like(actions) * noise_scale
             noisy_actions = actions + noise
-
-            print("Noisy Actions:", noisy_actions)
             
             # 4. 将带有噪声的动作传入环境
             obs, _, _, _ = env.step(noisy_actions)

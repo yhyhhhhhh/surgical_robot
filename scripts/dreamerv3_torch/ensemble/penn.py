@@ -6,9 +6,6 @@
 """
 import torch
 import torch.nn as nn
-import numpy as np
-import torch.distributions as D
-from torch.distributions.normal import Normal
 
 from .ensemble_linear import EnsembleLinear
 from .utility import JensenRenyiDivergence
@@ -46,7 +43,6 @@ class EnsembleStochasticLinear(torch.nn.Module):
         self.log_std_max = 1  # 2
 
     def forward(self, x):
-        prev_x = x.clone().detach()  # save previous state (history)
         x = self.act(self.lin1(x))
         x = self.act(self.lin2(x))
         x = self.act(self.lin3(x))
@@ -74,7 +70,6 @@ class EnsembleStochasticLinear(torch.nn.Module):
         return (*ensemble_outputs, dis)
 
     def single_forward(self, x, index):
-        prev_x = x.clone().detach()  # save previous state
         x = self.act(self.lin1.single_forward(x, index))
         x = self.act(self.lin2.single_forward(x, index))
         x = self.act(self.lin3.single_forward(x, index))

@@ -1,5 +1,5 @@
-import cv2
 import argparse
+
 from omni.isaac.lab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Tutorial on spawning prims into the scene.")
@@ -12,18 +12,12 @@ simulation_app = app_launcher.app
 
 
 import gymnasium as gym
-import omni.isaac.core.utils.prims as prim_utils
-from omni.isaac.lab_tasks.utils.parse_cfg import parse_env_cfg
-import omni.isaac.lab.sim as sim_utils
-from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
-from my_ur3_project.tasks.manipulator.ur3_surgical.config.joint_control.ur3_lift_needle_env import Ur3LiftNeedleEnv
+import numpy as np
 import torch
-from omni.isaac.lab.utils import convert_dict_to_backend
-from einops import rearrange
-import numpy as np
-from scipy.spatial.transform import Rotation as R
 
-import numpy as np
+from omni.isaac.lab_tasks.utils.parse_cfg import parse_env_cfg
+
+
 def load_and_inspect_traj(filename="trajectories_aligned.npz"):
     """
     加载 npz 文件，打印检查信息，并返回完整的数据字典。
@@ -150,7 +144,6 @@ def main():
         step_idx += 1
         
         # 5. 可选：打印信息
-        object_pos = env.env._object.data.body_pos_w[:, 0, :3]
         # 避免输出刷屏太快，可以降低打印频率，例如：
         # if step_idx % 10 == 0:
         #     print(f"Step {step_idx}: object_pos {object_pos}")

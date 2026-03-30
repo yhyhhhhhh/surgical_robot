@@ -1,7 +1,9 @@
-import torch
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
 import cv2
+
 
 def generate_graph_frames(scalars, num_frames, frame_size=(128, 128), max_val=0.3):
     """Generate frames of a changing graph using Matplotlib."""

@@ -1,10 +1,9 @@
-import pathlib
 import argparse
 import functools
 import numpy as np
-import torch
-import gymnasium as gym
+import pathlib
 import sys
+import torch
 
 sys.path.append("scripts")
 import dreamerv3_torch.dreamer_mile as dreamer
@@ -117,6 +116,7 @@ if __name__ == "__main__":
     # 读取 configs.yaml（与你训练一致）
     # -----------------------
     import pathlib
+
     import ruamel.yaml as yaml
 
     # 1. 初始化一个 YAML 解析器实例 (指定 typ='safe' 来替代原来的 safe_load)

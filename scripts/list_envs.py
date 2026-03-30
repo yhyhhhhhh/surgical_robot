@@ -21,6 +21,7 @@ from prettytable import PrettyTable
 
 # Import extensions to set up environment tasks
 import my_ur3_project.tasks  # noqa: F401
+
 # import orbit.surgical.tasks  # noqa: F401
 
 def main():

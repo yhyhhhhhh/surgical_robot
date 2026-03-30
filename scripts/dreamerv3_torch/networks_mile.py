@@ -1,13 +1,13 @@
 import math
 import numpy as np
 import re
-
 import torch
-from torch import nn
 import torch.nn.functional as F
 from torch import distributions as torchd
+from torch import nn
 
 import tools
+
 
 class RSSMMile(nn.Module):
     def __init__(

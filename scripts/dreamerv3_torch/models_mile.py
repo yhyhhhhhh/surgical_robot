@@ -1,8 +1,7 @@
-import copy
+import sys
 import torch
 from torch import nn
 
-import sys
 sys.path.append('latent_safety')
 
 import dreamerv3_torch.networks_mile as networks
@@ -264,11 +263,9 @@ class WorldModelMile(nn.Module):
         recon = self.heads["decoder"](self.dynamics.get_feat(states))["image"].mode()[
             :6
         ]
-        reward_post = self.heads["reward"](self.dynamics.get_feat(states)).mode()[:6]
         init = {k: v[:, -1] for k, v in states.items()}
         prior = self.dynamics.imagine_with_action(data["action"][:6, obs_step:], init)
         openl = self.heads["decoder"](self.dynamics.get_feat(prior))["image"].mode()
-        reward_prior = self.heads["reward"](self.dynamics.get_feat(prior)).mode()
         truth = data["image"][:6]
 
         # Clip when finished

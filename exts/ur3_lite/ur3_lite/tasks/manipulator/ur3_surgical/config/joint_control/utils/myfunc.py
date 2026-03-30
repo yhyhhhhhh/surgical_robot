@@ -1,7 +1,9 @@
-import cv2
 import torch
-from omni.isaac.lab.utils.math import *
+
+import cv2
+
 from omni.isaac.lab.utils.dict import *
+from omni.isaac.lab.utils.math import *
 
 
 def euclidean_distance(src, tar, reduction='mean'):

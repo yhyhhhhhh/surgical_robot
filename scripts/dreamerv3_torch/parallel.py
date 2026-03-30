@@ -1,9 +1,9 @@
 import atexit
+import enum
 import os
 import sys
 import time
 import traceback
-import enum
 from functools import partial as bind
 
 
@@ -79,6 +79,7 @@ class Worker:
 class ProcessPipeWorker:
     def __init__(self, fn, initializers=(), daemon=False):
         import multiprocessing
+
         import cloudpickle
 
         self._context = multiprocessing.get_context("spawn")

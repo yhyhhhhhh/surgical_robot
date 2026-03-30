@@ -1,7 +1,7 @@
-import cv2
 import argparse
-from omni.isaac.lab.app import AppLauncher
 import matplotlib.pyplot as plt
+
+from omni.isaac.lab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Tutorial on spawning prims into the scene.")
 AppLauncher.add_app_launcher_args(parser)
@@ -21,18 +21,12 @@ simulation_app = app_launcher.app
 
 
 import gymnasium as gym
-import omni.isaac.core.utils.prims as prim_utils
-from omni.isaac.lab_tasks.utils.parse_cfg import parse_env_cfg
-import omni.isaac.lab.sim as sim_utils
-from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
+import numpy as np
 import torch
-from omni.isaac.lab.utils import convert_dict_to_backend
-from einops import rearrange
-import numpy as np
-from scipy.spatial.transform import Rotation as R
 
-import numpy as np
-import ur3_lite
+from omni.isaac.lab_tasks.utils.parse_cfg import parse_env_cfg
+
+import ur3_lite  # noqa: F401
 
 
 def _to_bool_done(x) -> bool:

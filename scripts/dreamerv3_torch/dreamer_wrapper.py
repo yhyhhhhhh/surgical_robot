@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import gymnasium as gym  # needed for rl-games incompatibility: https://github.com/Denys88/rl_games/issues/261
-import torch
-import numpy as np
+
 # from rl_games.common.vecenv import IVecEnv
-import matplotlib.pyplot as plt
-from omni.isaac.lab.envs import DirectRLEnv, ManagerBasedRLEnv
+import numpy as np
+import torch
 
 """
 Vectorized environment wrapper.

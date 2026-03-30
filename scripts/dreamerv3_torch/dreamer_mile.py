@@ -1,6 +1,8 @@
 import argparse
 import os
+
 from omni.isaac.lab.app import AppLauncher
+
 
 # Check if simulation app is already running (e.g., from Jupyter notebook)
 # 检查仿真应用是否已经在运行（例如由 Jupyter notebook 启动）
@@ -40,7 +42,6 @@ else:
     print("[INFO] Simulation app already running - skipping duplicate launch")
     # 打印提示：仿真应用已在运行，跳过重复启动
 
-import functools
 import os
 import pathlib
 import sys
@@ -49,35 +50,28 @@ import sys
 os.environ["MUJOCO_GL"] = "osmesa"
 
 import numpy as np
-import ruamel.yaml as yaml
 
 # 将当前文件所在目录加入 Python 搜索路径，方便本地模块导入
 sys.path.append(str(pathlib.Path(__file__).parent))
 
 import gymnasium as gym
+import sys
 import torch
-
-import carb
-
-from omni.isaac.lab.managers import TerminationTermCfg as DoneTerm
 
 # 导入 Isaac Lab 任务集合（保持导入以触发注册）
 import omni.isaac.lab_tasks  # noqa: F401
 from omni.isaac.lab_tasks.utils import parse_env_cfg
 
-import sys
 sys.path.append('latent_safety')  # 添加自定义 latent_safety 模块路径
 
-from dreamer_wrapper import DreamerVecEnvWrapper
-import dreamerv3_torch.exploration as expl
+import torch
+from torch import nn
+
 import dreamerv3_torch.models_mile as models
 import dreamerv3_torch.tools as tools
 import dreamerv3_torch.uncertainty as uncertainty
 import envs.wrappers as wrappers
-
-import torch
-from torch import nn
-from torch import distributions as torchd
+from dreamer_wrapper import DreamerVecEnvWrapper
 
 # 将 Tensor 转为 NumPy 数组的辅助函数
 to_np = lambda x: x.detach().cpu().numpy()
@@ -460,7 +454,6 @@ class DreamerMile(nn.Module):
                 self._config.num_actions,
             )
         # ===== 这里：直接算 disagreement（不确定性）=====
-        disagreement = None
         if self._config.use_ensemble and (self._disag_ensemble is not None):
             with torch.no_grad():
                 if self._config.disag_action_cond:
@@ -469,7 +462,6 @@ class DreamerMile(nn.Module):
                     inputs = feat.detach()
 
                 # 你已有的接口：直接用
-                disagreement = self._disag_ensemble.intrinsic_reward_penn(inputs)
                 # disagreement shape 通常是 [B, 1] 或 [B, ...]（取决于 EnsembleStochasticLinear 的最后一项）
 
         policy_output = {"action": action, "logprob": logprob}

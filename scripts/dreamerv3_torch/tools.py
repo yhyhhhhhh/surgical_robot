@@ -1,21 +1,16 @@
-import datetime
 import collections
+import datetime
 import io
-import os
 import json
-import pathlib
-import re
-import time
-import random
-
 import numpy as np
-
+import os
+import pathlib
+import random
+import time
 import torch
+from torch import distributions as torchd
 from torch import nn
 from torch.nn import functional as F
-from torch import distributions as torchd
-from torch.utils.tensorboard import SummaryWriter
-
 
 to_np = lambda x: x.detach().cpu().numpy()
 
@@ -63,14 +58,15 @@ class DummyLogger:
         self._videos = {}
         self.step = step
 
+import numpy as np
 import os
+import pathlib
+import tempfile
 import time
 import uuid
-import tempfile
-import pathlib
 
-import numpy as np
 import imageio
+
 import wandb
 
 
@@ -457,8 +453,7 @@ def save_new_finished_episodes(cache, outdir):
 
         save_one_episode_npz(ep, save_path)
         # print(f"[saved] {save_path}")
-import datetime
-import uuid
+
 def simulate_vecenv(
     agent,  # 智能体
     vecenv,  # 一个包含N个子环境的单一向量化环境
@@ -714,7 +709,6 @@ def collect_vecenv(
         done_indices = np.where(next_done)[0]
         if len(done_indices) > 0:
             for i in done_indices:
-                eid = id_bank[i]
 
                 # pose 记录（完全对齐 simulate_vecenv：不吞异常，直接取并 append 整批）
                 pose_tensor = info['pose']['metrics/pose_command']
@@ -897,6 +891,7 @@ def filter_action(wm, ensemble, latent, actions, latent_filter, uq_thr=4.2, reac
     return action, is_filtered
 
 import omni.isaac.core.utils.torch as torch_utils
+
 
 def reset_episode(vecenv, latent_dynamics, seed=None):
     vecenv.seed(seed)
@@ -1500,6 +1495,8 @@ def save_episodes(directory, episodes):
 
 import cv2
 import imageio
+
+
 def save_video(directory, filename, video, failure):
     directory = pathlib.Path(directory).expanduser()
     directory.mkdir(parents=True, exist_ok=True)
