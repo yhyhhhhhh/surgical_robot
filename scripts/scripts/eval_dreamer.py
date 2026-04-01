@@ -134,9 +134,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--configs", nargs="+")
-    parser.add_argument("--task", type=str, default="Ur3Lite-PipeRelCamFinalGoal-Ik-RL-Direct-v0")
+    parser.add_argument("--task", type=str, default="Ur3Lite-PipeRelGoalForce-OSC-RL-Direct-v0")
     # parser.add_argument("--model_path", type=str, default="/home/yhy/IsaacLabExtensionTemplate_lite/model/world_model/latest.pt")
-    parser.add_argument("--model_path", type=str, default="/home/yhy/IsaacLabExtensionTemplate_lite/model/world_model/211833_test/train_eps/211833_test/latest.pt")
+    parser.add_argument("--model_path", type=str, default="/home/yhy/IsaacLabExtensionTemplate_lite/latent_safety/log/dreamerv3/world_model_only/0331/230838_test/latest.pt")
     parser.add_argument("--eval_episode_num", type=int, default=20)
     parser.add_argument("--eval_print_every", type=int, default=50)
     parser.add_argument("--noise_std", type=float, default=0.1)

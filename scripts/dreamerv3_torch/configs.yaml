@@ -14,7 +14,7 @@ defaults:
   offline_evaldir: '/home/yhy/IsaacLabExtensionTemplate/expert_data_episodes'
   seed: 422
   deterministic_run: False
-  steps: 4e6
+  steps: 5e6
   parallel: False
   eval_every: 12800
   eval_episode_num: 1 # 10
@@ -30,7 +30,7 @@ defaults:
   # Environment
   task: 'My-Isaac-Ur3-PipeRelCam-Ik-RL-Direct-v0'
   size: [128, 128]
-  envs: 8
+  envs: 4
   action_repeat: 1
   time_limit: 1000
   grayscale: False
@@ -67,7 +67,7 @@ defaults:
     mlp_layers: 3, mlp_units: 512,
     cnn_sigmoid: False, image_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
   actor:
-    {layers: 2, dist: 'normal', entropy: 3e-4, unimix_ratio: 0.01, std: 'learned', min_std: 0.1, max_std: 1.0, temp: 0.1, lr: 3e-5, eps: 1e-5, grad_clip: 100.0, outscale: 1.0}
+    {layers: 2, dist: 'normal', entropy: 1e-2, unimix_ratio: 0.01, std: 'learned', min_std: 0.3, max_std: 2.0, temp: 0.1, lr: 3e-5, eps: 1e-5, grad_clip: 100.0, outscale: 1.0}
   critic:
     {layers: 2, dist: 'symlog_disc', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, lr: 3e-5, eps: 1e-5, grad_clip: 100.0, outscale: 0.0}
   reward_head:
@@ -92,7 +92,7 @@ defaults:
   model_lr: 1e-4
   opt_eps: 1e-8
   grad_clip: 1000
-  dataset_size: 1e6
+  dataset_size: 5e6
   opt: 'adam'
 
   # Behavior.

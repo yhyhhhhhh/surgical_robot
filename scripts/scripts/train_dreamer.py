@@ -422,7 +422,7 @@ if __name__ == "__main__":
 	parser.add_argument(
 		"--task",
 		type=str,
-		default="Ur3Lite-PipeRelCamFinalGoal-Ik-RL-Direct-v0",
+		default="Ur3Lite-PipeRelGoalForce-OSC-RL-Direct-v0",
 		help="Name of the task."
 	)
 	parser.add_argument("--collect_only", action="store_true", default=False)

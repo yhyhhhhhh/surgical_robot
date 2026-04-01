@@ -216,29 +216,6 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         # 小物体
         self._object = RigidObject(cfg=self.cfg.object)
-        self._pipe_contact = ContactSensor(
-            ContactSensorCfg(
-                prim_path="{ENV_REGEX_NS}/pipe/pipe",      # 改成你USD里内壁prim真实名字
-                update_period=0.0,
-                history_length=4,
-                debug_vis=False,
-                track_air_time=False,
-                filter_prim_paths_expr=["{ENV_REGEX_NS}/Robot/.*"],
-            )
-        )
-        self.scene.sensors["pipe_contact"] = self._pipe_contact
-
-        self._bottom_contact = ContactSensor(
-            ContactSensorCfg(
-                prim_path="{ENV_REGEX_NS}/pipe/bottom",    # 改成真实名字
-                update_period=0.0,
-                history_length=4,
-                debug_vis=False,
-                track_air_time=False,
-                filter_prim_paths_expr=["{ENV_REGEX_NS}/Robot/.*"],
-            )
-        )
-        self.scene.sensors["bottom_contact"] = self._bottom_contact
         # 额外视图
         self.scene.extras["pipe"] = XFormPrimView(self.cfg.pipe.prim_path, reset_xform_properties=False)
         self.scene.extras["Table"] = XFormPrimView(self.cfg.table_robot.prim_path, reset_xform_properties=False)
@@ -503,16 +480,6 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # ------------------- 末端 / 物体世界坐标 -------------------
         ee_pos_w = self._robot.data.body_pos_w[:, self.ee_id, 0:3]
         obj_pos_w = self.scene.rigid_objects["object"].data.body_pos_w[:, 0, :3]
-
-        # 调用边界接触力统计并打印
-        pipe_force_vec, bottom_force_vec, pipe_force, bottom_force = self._get_boundary_contact_forces()
-        print(
-            "[boundary_contact] "
-            f"pipe_mean={pipe_force.mean().item():.6f}, "
-            f"bottom_mean={bottom_force.mean().item():.6f}, "
-            f"pipe_vec_env0={pipe_force_vec[0].tolist()}, "
-            f"bottom_vec_env0={bottom_force_vec[0].tolist()}"
-        )
 
         ee_dist = torch.norm(ee_pos_w - obj_pos_w, dim=1)
         self.ee_dist = ee_dist

@@ -113,7 +113,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         )
         self.reset_interval = torch.zeros_like(self.last_reset_t)
         self.goal_pos_local = torch.tensor(
-            [0.00, -0.29, -0.21], device=self.device
+            [0.00, -0.29, -0.225], device=self.device
         )  # 例子，自己按场景改
         self.goal_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
 

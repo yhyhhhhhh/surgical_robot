@@ -142,20 +142,28 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         )
         self.reset_interval = torch.zeros_like(self.last_reset_t)
 
-        self.goal_pos_local = torch.tensor([0.00, -0.29, -0.21], device=self.device)
+        self.goal_pos_local = torch.tensor([0.00, -0.29, -0.225], device=self.device)
         self.goal_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
 
         self.goal_reach_thr = 0.005
         self.goal_lift_thr = 0.003
         self.prev_obj_goal_dist = torch.zeros(self.num_envs, device=self.device)
 
-        self._build_dreamer_observation_space()
 
         # self.set_debug_vis(self.cfg.debug_vis)
         self.command_visualizer_b = torch.tensor([[0.4, 0, 0.35]] * self.num_envs, device=self.device)
 
         self.last_actions = torch.zeros(self.num_envs, 5, device=self.device)
         self.cur_actions = torch.zeros(self.num_envs, 5, device=self.device)
+        # Lift-success hysteresis (dense reward + anti-jitter around threshold).
+        self.success_on_thr = 0.005
+        self.success_off_thr = 0.0035
+        self.success_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # failure termination on excessive contact force (can be overridden from cfg)
+        self.pipe_force_fail_thr = 2.0
+        self.bottom_force_fail_thr = 2.0
+        self.force_fail = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._build_dreamer_observation_space()
 
         self._use_external_pose = False
         self._external_pose_buffer = None
@@ -223,7 +231,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             self.cfg.ground.spawn,
             translation=self.cfg.ground.init_state.pos,
         )
-        self._object = RigidObject(cfg=self.cfg.object)
+
         self._pipe_contact = ContactSensor(
             ContactSensorCfg(
                 prim_path="/World/envs/env_.*/pipe/pipe",      # 改成你USD里内壁prim真实名字
@@ -508,7 +516,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         axial_new = s_tgt.unsqueeze(-1) * self.u_axis
 
         self.ee_target_pos_w = self.pipe_top_pos + axial_new + radial_new
-
+        # self.ee_target_pos_w[:,2] = torch.clamp(self.ee_target_pos_w[:,2], min=-0.2331)   # z 轴不允许穿地面
         # 4) 更新目标姿态
         # 这里用“初始名义姿态 + 围绕局部 y 轴的 yaw 增量”
         self.ee_target_yaw = self.ee_target_yaw + delta_yaw
@@ -582,8 +590,25 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
     # 终止条件（保留你原来的逻辑）
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        # timeout -> truncated
         truncated = self.episode_length_buf >= self.max_episode_length - 1
-        self.terminated = truncated
+
+        # task success -> terminated
+        obj_pos_w = self._object.data.body_pos_w[:, 0, :3]
+        obj_z = obj_pos_w[:, 2] - self.scene.env_origins[:, 2]
+        init_z = self._object.data.default_root_state[:, 2]
+        object_lift = torch.clamp(obj_z - init_z, min=0.0)
+
+        obj_goal_dist = torch.norm(self.goal_pos_w - obj_pos_w, dim=1)
+        goal_success = (obj_goal_dist < self.goal_reach_thr) & (
+            object_lift > self.goal_lift_thr
+        )
+
+        # failure termination: excessive contact forces on pipe / bottom
+        force_fail, _, _ = self._get_force_fail_mask()
+        self.force_fail = force_fail
+
+        self.terminated = goal_success | force_fail
         return self.terminated, truncated
 
     def _get_rewards(self) -> torch.Tensor:
@@ -652,19 +677,24 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
             return torch.atan2(siny_cosp, cosy_cosp)
 
-        dyaw_abs = torch.abs(
-            torch.atan2(
-                torch.sin(quat_to_yaw(ee_quat_w) - quat_to_yaw(obj_quat_w)),
-                torch.cos(quat_to_yaw(ee_quat_w) - quat_to_yaw(obj_quat_w)),
-            )
+        dyaw = torch.atan2(
+            torch.sin(quat_to_yaw(ee_quat_w) - quat_to_yaw(obj_quat_w)),
+            torch.cos(quat_to_yaw(ee_quat_w) - quat_to_yaw(obj_quat_w)),
         )
+        dyaw_abs = torch.abs(dyaw)
+
+        # Cube-like object: 4 equivalent yaw orientations (period = pi/2).
+        # Fold yaw error into [-pi/4, pi/4] so 0/90/180/270 deg are all valid.
+        yaw_period = 0.5 * math.pi
+        dyaw_sym = torch.remainder(dyaw + 0.5 * yaw_period, yaw_period) - 0.5 * yaw_period
+        dyaw_sym_abs = torch.abs(dyaw_sym)
 
         # Yaw 门控：只有位置比较准了才在乎 Yaw
         g_yaw = torch.sigmoid((0.003 - e_lat) / 0.0005) * torch.sigmoid(
             (0.004 - e_ax) / 0.0015
         )
-        r_yaw = 0.6 * torch.exp(-((dyaw_abs / 0.35) ** 2)) + 0.4 * torch.exp(
-            -((dyaw_abs / 0.12) ** 2)
+        r_yaw = 0.6 * torch.exp(-((dyaw_sym_abs / 0.35) ** 2)) + 0.4 * torch.exp(
+            -((dyaw_sym_abs / 0.12) ** 2)
         )
         yaw_reward = 0.5 * g_yaw * r_yaw
 
@@ -731,16 +761,26 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         )
         out_penalty = -3.0 * out_ax
 
-        step_penalty = -0.01
+        # smaller living cost to avoid overwhelming long-horizon credit assignment in Dreamer
+        step_penalty = -0.002
 
         # ------------------- 6) 抬起与成功奖励 -------------------
-        lift_success_thr = 0.005
+        lift_success_thr = self.success_on_thr
         # 连续抬起奖励 (鼓励它越抬越高)
         lift_reward = 5.0 * torch.clamp(object_lift / lift_success_thr, 0.0, 1.0)
 
-        success = object_lift > lift_success_thr
-        # self.terminated = success
-        success_reward = 10.0 * success.float()
+        # Hysteresis state:
+        # on  when lift > 5.0mm, off when lift < 3.5mm, keep state in-between.
+        success_on = object_lift > self.success_on_thr
+        success_off = object_lift < self.success_off_thr
+        success_active = torch.where(
+            success_on, torch.ones_like(self.success_active), self.success_active
+        )
+        success_active = torch.where(
+            success_off, torch.zeros_like(success_active), success_active
+        )
+        self.success_active = success_active
+        success_reward = 4.0 * success_active.float()
         # ------------------- 动作惩罚 -------------------
         dact = self.cur_actions - self.last_actions
         smooth_pen = -0.05 * (dact[:, :4] ** 2).sum(dim=1) - 0.02 * (
@@ -767,14 +807,14 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # 维持抓取，防止搬运中掉落
         hold_bonus = transport_gate * 1.0 * is_captured_rule.float()
 
-        # 如果已经进入搬运阶段却掉了，给惩罚
-        drop_penalty = -5.0 * ((transport_gate > 0.5) & (~is_captured_rule)).float()
+        # 如果进入搬运阶段且未夹稳，按阶段强度给软惩罚（比 hard-threshold 更平滑）
+        drop_penalty = -2.0 * transport_gate * (1.0 - is_captured_rule.float())
 
         # 最终成功：物体到目标点附近，且仍被抬起/夹持
         goal_success = (obj_goal_dist < self.goal_reach_thr) & (
             object_lift > self.goal_lift_thr
         )
-        goal_success_reward = 20.0 * goal_success.float()
+        goal_success_reward = 8.0 * goal_success.float()
         # ------------------- 总和 -------------------
         rewards = (
             align_reward
@@ -794,7 +834,11 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             + drop_penalty  # 新增
             + goal_success_reward  # 新增
         )
+        # mild clipping for world-model stability
+        rewards = torch.clamp(rewards, min=-8.0, max=8.0)
         # self._push_live_metrics(rewards-success_reward-lift_reward, lift_reward)
+        # contact force diagnostics (for failure termination tuning)
+        force_fail, pipe_peak_force, bottom_peak_force = self._get_force_fail_mask()
         self.extras["log"] = {
             "reward/total": rewards.mean(),
             "reward/align": align_reward.mean(),
@@ -804,6 +848,8 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             "reward/out_pen": out_penalty.mean(),
             "reward/lift": lift_reward.mean(),
             "reward/success": success_reward.mean(),
+            "reward/goal_success": goal_success_reward.mean(),
+            "metrics/success_active_rate": self.success_active.float().mean(),
             "goal_reward": goal_reward.mean(),
             "metrics/e_lat": e_lat.mean(),
             "metrics/e_ax": e_ax.mean(),
@@ -813,9 +859,13 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             "metrics/lift": object_lift.mean(),
             "reward/yaw": yaw_reward.mean(),
             "metrics/dyaw_abs": dyaw_abs.mean(),
+            "metrics/dyaw_sym_abs": dyaw_sym_abs.mean(),
             "metrics/g_yaw": g_yaw.mean(),
             "reward/smooth_pen": smooth_pen.mean(),
             "reward/vel_pen": vel_pen.mean(),
+            "metrics/pipe_force_peak": pipe_peak_force.mean(),
+            "metrics/bottom_force_peak": bottom_peak_force.mean(),
+            "metrics/force_fail_rate": force_fail.float().mean(),
         }
         self.extras["pose"] = {
             "metrics/pose_command": self.pose_command_w[0, :],
@@ -877,6 +927,9 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         # gripper reset
         self.gripper_cmd[env_ids] = -0.10
+        self.last_actions[env_ids] = 0.0
+        self.success_active[env_ids] = False
+        self.force_fail[env_ids] = False
 
         # goal reset
         self.goal_pos_w[env_ids] = self.goal_pos_local.unsqueeze(0) + self.scene.env_origins[env_ids]
@@ -1080,6 +1133,8 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         is_first = (self.episode_length_buf == 0).to(torch.int32)
         zeros = torch.zeros_like(is_first)
+        force_fail, _, _ = self._get_force_fail_mask()
+        self.force_fail = force_fail
 
         # rgb = self.get_image_observation(data_type="rgb")[..., :3]  # [N,H,W,3]
 
@@ -1088,7 +1143,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             "is_first": is_first,
             "is_last": zeros,
             "is_terminal": zeros,
-            "failure": zeros,
+            "failure": force_fail.to(torch.int32),
         }
         if self._use_image_obs():
             obs["image"] = self.get_image_observation(data_type="rgb")[
@@ -1280,3 +1335,31 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         delta = ee_pos - self.pipe_top_pos
         d_axial = torch.sum(delta * self.u_axis, dim=1)
         return d_axial
+
+    def _get_contact_peak(self, sensor) -> torch.Tensor:
+        """Return per-env peak norm from contact sensor history/current forces."""
+        if sensor is None:
+            return torch.zeros(self.num_envs, device=self.device)
+
+        data = sensor.data
+        if hasattr(data, "net_forces_w_history") and data.net_forces_w_history is not None:
+            forces = data.net_forces_w_history
+        elif hasattr(data, "net_forces_w") and data.net_forces_w is not None:
+            forces = data.net_forces_w.unsqueeze(1)
+        elif hasattr(data, "force_matrix_w") and data.force_matrix_w is not None:
+            forces = data.force_matrix_w
+        else:
+            return torch.zeros(self.num_envs, device=self.device)
+
+        forces = torch.nan_to_num(forces, nan=0.0, posinf=0.0, neginf=0.0)
+        forces = forces.reshape(forces.shape[0], -1, 3)
+        return torch.linalg.vector_norm(forces, dim=-1).max(dim=1).values
+
+    def _get_force_fail_mask(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Failure mask based on excessive contact force on pipe/bottom."""
+        pipe_peak = self._get_contact_peak(getattr(self, "_pipe_contact", None))
+        bottom_peak = self._get_contact_peak(getattr(self, "_bottom_contact", None))
+        force_fail = (pipe_peak > self.pipe_force_fail_thr) | (
+            bottom_peak > self.bottom_force_fail_thr
+        )
+        return force_fail, pipe_peak, bottom_peak
