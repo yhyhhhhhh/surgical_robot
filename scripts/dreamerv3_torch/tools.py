@@ -2,6 +2,7 @@ import collections
 import datetime
 import io
 import json
+import math
 import numpy as np
 import os
 import pathlib
@@ -68,10 +69,21 @@ import uuid
 import imageio
 
 import wandb
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except Exception:
+    SummaryWriter = None
 
 
 class Logger:
-    def __init__(self, logdir, step):
+    def __init__(
+        self,
+        logdir,
+        step,
+        use_wandb=True,
+        use_tensorboard=True,
+        tensorboard_subdir="tb",
+    ):
         self._logdir = logdir
         self._last_step = None
         self._last_time = None
@@ -79,10 +91,24 @@ class Logger:
         self._images = {}
         self._videos = {}
         self.step = step
+        self._use_wandb = bool(use_wandb)
+        self._use_tensorboard = bool(use_tensorboard)
+        self._tb_writer = None
+        self._tb_logdir = pathlib.Path(logdir) / tensorboard_subdir
 
-        name = str(logdir).split("/")[-2] + "_" + str(logdir).split("/")[-1]
-        # Initialize WandB
-        wandb.init(project="isaac_takeoff", config={"logdir": str(logdir)}, name=name)
+        if self._use_wandb:
+            name = str(logdir).split("/")[-2] + "_" + str(logdir).split("/")[-1]
+            # Initialize WandB
+            wandb.init(project="isaac_takeoff", config={"logdir": str(logdir)}, name=name)
+
+        if self._use_tensorboard:
+            if SummaryWriter is None:
+                print("[Logger] TensorBoard disabled: SummaryWriter not available.")
+                self._use_tensorboard = False
+            else:
+                self._tb_logdir.mkdir(parents=True, exist_ok=True)
+                self._tb_writer = SummaryWriter(log_dir=str(self._tb_logdir))
+                print(f"[Logger] TensorBoard logging to: {self._tb_logdir}")
 
     def config(self, config_dict):
         # Convert PosixPath objects to strings
@@ -91,7 +117,11 @@ class Logger:
             for k, v in config_dict.items()
         }
         # Log the config
-        wandb.config.update(config_dict)
+        if self._use_wandb:
+            wandb.config.update(config_dict)
+        if self._tb_writer is not None:
+            config_text = json.dumps(config_dict, indent=2, ensure_ascii=False, default=str)
+            self._tb_writer.add_text("config", f"```json\n{config_text}\n```", self.step)
 
     def scalar(self, name, value):
         self._scalars[name] = float(value)
@@ -123,6 +153,26 @@ class Logger:
 
         return filename
 
+    def _to_tb_video_tensor(self, value):
+        """Convert video from (B,T,H,W,C) to torch tensor (B,T,C,H,W), float in [0,1]."""
+        value = np.asarray(value)
+        if value.ndim != 5:
+            raise ValueError(f"Expected video value with 5 dims (B,T,H,W,C), got {value.shape}")
+
+        if np.issubdtype(value.dtype, np.floating):
+            video = value.astype(np.float32)
+            # If model outputs roughly [-1, 1], map to [0, 1].
+            if video.min() < 0.0 and video.min() >= -1.1 and video.max() <= 1.1:
+                video = 0.5 * (video + 1.0)
+            # If values are in [0,255] float, normalize to [0,1].
+            elif video.max() > 1.5:
+                video = video / 255.0
+            video = np.clip(video, 0.0, 1.0)
+        else:
+            video = value.astype(np.float32) / 255.0
+
+        return torch.from_numpy(video).permute(0, 1, 4, 2, 3).contiguous()
+
     def write(self, fps=False, step=False, fps_namespace="", print_cli=False):
         if not step:
             step = self.step
@@ -133,45 +183,70 @@ class Logger:
         if print_cli:
             print(f"[{step}]", " / ".join(f"{k} {v:.1f}" for k, v in scalars))
 
-        # Log metrics to WandB
+        # Log metrics
         metrics = {"step": step, **dict(scalars)}
-        wandb.log(metrics, step=step)
+        if self._use_wandb:
+            wandb.log(metrics, step=step)
+        if self._tb_writer is not None:
+            for k, v in scalars:
+                self._tb_writer.add_scalar(k, float(v), global_step=step)
 
         # ----- images -----
         for name, value in self._images.items():
             if np.shape(value)[0] == 3:  # (C,H,W) -> (H,W,C)
                 value = np.transpose(value, (1, 2, 0))
-            wandb.log({name: [wandb.Image(value, caption=name)]}, step=step)
+            if self._use_wandb:
+                wandb.log({name: [wandb.Image(value, caption=name)]}, step=step)
+            if self._tb_writer is not None:
+                img = np.asarray(value)
+                try:
+                    if img.ndim == 2:
+                        self._tb_writer.add_image(name, img, global_step=step, dataformats="HW")
+                    elif img.ndim == 3 and img.shape[0] in (1, 3, 4):
+                        self._tb_writer.add_image(name, img, global_step=step, dataformats="CHW")
+                    elif img.ndim == 3 and img.shape[-1] in (1, 3, 4):
+                        self._tb_writer.add_image(name, img, global_step=step, dataformats="HWC")
+                except Exception as e:
+                    print(f"[Logger] Failed to log image {name} to TensorBoard: {e}")
 
         # ----- videos -----
         for name, value in self._videos.items():
             name = name if isinstance(name, str) else name.decode("utf-8")
 
-            # value 预期 shape: (B, T, H, W, C)
-            if np.issubdtype(value.dtype, np.floating):
-                value = np.clip(255 * value, 0, 255).astype(np.uint8)
+            # TensorBoard video: keep batch as batch.
+            if self._tb_writer is not None:
+                try:
+                    tb_video = self._to_tb_video_tensor(value)
+                    self._tb_writer.add_video(name, tb_video, global_step=step, fps=20)
+                except Exception as e:
+                    print(f"[Logger] Failed to log video {name} to TensorBoard: {e}")
 
-            if value.ndim != 5:
-                raise ValueError(f"Expected video value with 5 dims (B,T,H,W,C), got {value.shape}")
+            # WandB video: tile batch along width then encode mp4.
+            if self._use_wandb:
+                wandb_value = np.asarray(value)
+                if np.issubdtype(wandb_value.dtype, np.floating):
+                    wandb_value = np.clip(255 * wandb_value, 0, 255).astype(np.uint8)
 
-            B, T, H, W, C = value.shape
+                if wandb_value.ndim != 5:
+                    raise ValueError(
+                        f"Expected video value with 5 dims (B,T,H,W,C), got {wandb_value.shape}"
+                    )
 
-            # 把 batch 和 width 合并，得到一个横向拼接的视频：
-            # (B, T, H, W, C) -> (T, H, B*W, C)
-            value = value.transpose(1, 2, 0, 3, 4).reshape(T, H, B * W, C)
-
-            try:
-                # 1) 自己编码为 mp4 文件
-                video_path = self._array_to_mp4(value, fps=20)
-                # 2) 传路径给 wandb.Video（不会再触发 moviepy 的 encode 错误）
-                wandb.log({name: wandb.Video(video_path)}, step=step)
-            except Exception as e:
-                print(f"[Logger] Failed to log video {name}: {e}")
+                B, T, H, W, C = wandb_value.shape
+                # (B, T, H, W, C) -> (T, H, B*W, C)
+                wandb_value = wandb_value.transpose(1, 2, 0, 3, 4).reshape(T, H, B * W, C)
+                try:
+                    video_path = self._array_to_mp4(wandb_value, fps=20)
+                    wandb.log({name: wandb.Video(video_path)}, step=step)
+                except Exception as e:
+                    print(f"[Logger] Failed to log video {name}: {e}")
 
         # 清空缓存
         self._scalars = {}
         self._images = {}
         self._videos = {}
+        if self._tb_writer is not None:
+            self._tb_writer.flush()
 
     def _compute_fps(self, step):
         if self._last_step is None:
@@ -185,24 +260,36 @@ class Logger:
         return steps / duration
 
     def offline_scalar(self, name, value, step):
-        wandb.log({f"scalars/{name}": value}, step=step)
+        if self._use_wandb:
+            wandb.log({f"scalars/{name}": value}, step=step)
+        if self._tb_writer is not None:
+            self._tb_writer.add_scalar(f"scalars/{name}", float(value), global_step=step)
 
     def offline_video(self, name, value, step):
+        if self._tb_writer is not None:
+            try:
+                tb_video = self._to_tb_video_tensor(value)
+                self._tb_writer.add_video(name, tb_video, global_step=step, fps=20)
+            except Exception as e:
+                print(f"[Logger] Failed to log offline video {name} to TensorBoard: {e}")
+
         # value: 预期 (B, T, H, W, C)
-        if np.issubdtype(value.dtype, np.floating):
-            value = np.clip(255 * value, 0, 255).astype(np.uint8)
+        wandb_value = np.asarray(value)
+        if np.issubdtype(wandb_value.dtype, np.floating):
+            wandb_value = np.clip(255 * wandb_value, 0, 255).astype(np.uint8)
 
-        if value.ndim != 5:
-            raise ValueError(f"Expected video value with 5 dims (B,T,H,W,C), got {value.shape}")
+        if wandb_value.ndim != 5:
+            raise ValueError(f"Expected video value with 5 dims (B,T,H,W,C), got {wandb_value.shape}")
 
-        B, T, H, W, C = value.shape
-        value = value.transpose(1, 2, 0, 3, 4).reshape(T, H, B * W, C)
+        B, T, H, W, C = wandb_value.shape
+        wandb_value = wandb_value.transpose(1, 2, 0, 3, 4).reshape(T, H, B * W, C)
 
-        try:
-            video_path = self._array_to_mp4(value, fps=20)
-            wandb.log({name: wandb.Video(video_path)}, step=step)
-        except Exception as e:
-            print(f"[Logger] Failed to log offline video {name}: {e}")
+        if self._use_wandb:
+            try:
+                video_path = self._array_to_mp4(wandb_value, fps=20)
+                wandb.log({name: wandb.Video(video_path)}, step=step)
+            except Exception as e:
+                print(f"[Logger] Failed to log offline video {name}: {e}")
 
 
 def simulate(
@@ -554,7 +641,7 @@ def simulate_vecenv(
                     logger.scalar(key, float(value.item()))
 
                 if not is_eval:
-                    save_new_finished_episodes(cache, "/home/yhy/IsaacLabExtensionTemplate_lite/data1/")
+                    save_new_finished_episodes(cache, "/home/yhy/IsaacLabExtensionTemplate_lite/data2/")
                     logger.scalar(f"训练返回", score)
                     logger.scalar(f"训练步长", length)
                     logger.scalar(f"训练回合", len(cache))
@@ -1645,17 +1732,32 @@ class SampleDist:
     def __getattr__(self, name):
         return getattr(self._dist, name)
 
+    def _sample_n(self):
+        # torch.distributions.sample expects sample_shape to be tuple/torch.Size.
+        return self._dist.sample((self._samples,))
+
     def mean(self):
-        samples = self._dist.sample(self._samples)
+        samples = self._sample_n()
         return torch.mean(samples, 0)
 
     def mode(self):
-        sample = self._dist.sample(self._samples)
-        logprob = self._dist.log_prob(sample)
-        return sample[torch.argmax(logprob)][0]
+        samples = self._sample_n()
+        logprob = self._dist.log_prob(samples)
+
+        # samples shape: (S, *batch, *event), logprob shape: (S, *batch)
+        batch_shape = logprob.shape[1:]
+        event_shape = samples.shape[1 + len(batch_shape) :]
+
+        flat_logprob = logprob.reshape(self._samples, -1)
+        flat_samples = samples.reshape(self._samples, -1, *event_shape)
+
+        best_idx = torch.argmax(flat_logprob, dim=0)
+        batch_idx = torch.arange(flat_samples.shape[1], device=samples.device)
+        best_samples = flat_samples[best_idx, batch_idx]
+        return best_samples.reshape(*batch_shape, *event_shape)
 
     def entropy(self):
-        sample = self._dist.sample(self._samples)
+        sample = self._sample_n()
         logprob = self.log_prob(sample)
         return -torch.mean(logprob, 0)
 
@@ -1888,10 +1990,16 @@ class SafeTruncatedNormal(torchd.normal.Normal):
 
 
 class TanhBijector(torchd.Transform):
-    def __init__(self, validate_args=False, name="tanh"):
-        super().__init__()
+    # PyTorch Transform API compatibility (newer versions require these attrs).
+    domain = torchd.constraints.real
+    codomain = torchd.constraints.interval(-1.0, 1.0)
+    bijective = True
+    sign = +1
 
-    def _forward(self, x):
+    def __init__(self, validate_args=False, name="tanh"):
+        super().__init__(cache_size=1)
+
+    def _call(self, x):
         return torch.tanh(x)
 
     def _inverse(self, y):
@@ -1901,9 +2009,10 @@ class TanhBijector(torchd.Transform):
         y = torch.atanh(y)
         return y
 
-    def _forward_log_det_jacobian(self, x):
-        log2 = torch.math.log(2.0)
-        return 2.0 * (log2 - x - torch.softplus(-2.0 * x))
+    def log_abs_det_jacobian(self, x, y):
+        del y
+        log2 = math.log(2.0)
+        return 2.0 * (log2 - x - torch.nn.functional.softplus(-2.0 * x))
 
 
 def static_scan_for_lambda_return(fn, inputs, start):

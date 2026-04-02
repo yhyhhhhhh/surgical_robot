@@ -67,7 +67,7 @@ defaults:
     mlp_layers: 3, mlp_units: 512,
     cnn_sigmoid: False, image_dist: mse, vector_dist: symlog_mse, outscale: 1.0}
   actor:
-    {layers: 2, dist: 'normal', entropy: 1e-3, unimix_ratio: 0.01, std: 'learned', min_std: 0.3, max_std: 2.0, temp: 0.1, lr: 3e-5, eps: 1e-5, grad_clip: 100.0, outscale: 1.0}
+    {layers: 2, dist: 'normal', entropy: 1e-2, unimix_ratio: 0.01, std: 'learned', min_std: 0.3, max_std: 2.0, temp: 0.1, lr: 3e-5, eps: 1e-5, grad_clip: 100.0, outscale: 1.0}
   critic:
     {layers: 2, dist: 'symlog_disc', slow_target: True, slow_target_update: 1, slow_target_fraction: 0.02, lr: 3e-5, eps: 1e-5, grad_clip: 100.0, outscale: 0.0}
   reward_head:

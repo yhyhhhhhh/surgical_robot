@@ -94,9 +94,13 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         self.pipe_radius = 0.0075
         self.pipe_safety_margin = 0.000
         self.pipe_length = 0.04
+        # Pipe valid z range in local env frame.
+        # Your setup: approximately [-0.23, -0.21], outside this band is treated as out.
+        self.pipe_z_min_local = -0.235
+        self.pipe_z_max_local = -0.22
 
-        self.step_outside = torch.tensor([[0.01, 0.003, 0.30, 0.6]], device=self.device)
-        self.step_inside = torch.tensor([[0.002, 0.0005, 0.04, 0.04]], device=self.device)
+        self.step_outside = torch.tensor([[0.01, 0.003, 0.30, 0.08]], device=self.device)
+        self.step_inside = torch.tensor([[0.002, 0.0005, 0.04, 0.01]], device=self.device)
 
         self.gripper_min = torch.tensor([-0.28], device=self.device)
         self.gripper_max = torch.tensor([-0.10], device=self.device)
@@ -516,10 +520,15 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         axial_new = s_tgt.unsqueeze(-1) * self.u_axis
 
         self.ee_target_pos_w = self.pipe_top_pos + axial_new + radial_new
-        # self.ee_target_pos_w[:,2] = torch.clamp(self.ee_target_pos_w[:,2], min=-0.2331)   # z 轴不允许穿地面
+        # Clamp target z into pipe band in local frame: [-0.235, -0.21].
+        ee_target_z_local = self.ee_target_pos_w[:, 2] - self.scene.env_origins[:, 2]
+        ee_target_z_local = torch.clamp(
+            ee_target_z_local, min=self.pipe_z_min_local, max=self.pipe_z_max_local
+        )
+        self.ee_target_pos_w[:, 2] = ee_target_z_local + self.scene.env_origins[:, 2]
         # 4) 更新目标姿态
         # 这里用“初始名义姿态 + 围绕局部 y 轴的 yaw 增量”
-        self.ee_target_yaw = self.ee_target_yaw + delta_yaw
+        self.ee_target_yaw = self.ee_target_yaw + delta_yaw * 0 
 
         local_z = torch.zeros(self.num_envs, 3, device=self.device)
         local_z[:, 2] = 1.0
@@ -608,7 +617,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         force_fail, _, _ = self._get_force_fail_mask()
         self.force_fail = force_fail
 
-        self.terminated = goal_success | force_fail
+        self.terminated = goal_success
         return self.terminated, truncated
 
     def _get_rewards(self) -> torch.Tensor:
@@ -756,10 +765,13 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         wall_violation = torch.relu(r_e - (self.pipe_radius - self.pipe_safety_margin))
         wall_penalty = -10.0 * (wall_violation**2)
 
-        out_ax = torch.relu(-s_e) + torch.relu(
-            s_e - (self.pipe_length - self.pipe_safety_margin)
+
+        # Additional out check from local z range.
+        ee_z_local = ee_pos_w[:, 2] - self.scene.env_origins[:, 2]
+        out_z = torch.relu(ee_z_local - self.pipe_z_max_local) + torch.relu(
+            self.pipe_z_min_local - ee_z_local
         )
-        out_penalty = -3.0 * out_ax
+        out_penalty = - 5.0 * out_z
 
         # smaller living cost to avoid overwhelming long-horizon credit assignment in Dreamer
         step_penalty = -0.002
@@ -820,18 +832,18 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             align_reward
             + dist_reward
             + gripper_reward  # ✅ 现在的模仿奖励
-            + wall_penalty
+            # + wall_penalty
             + out_penalty
             + lift_reward
             + success_reward
-            + yaw_reward
+            # + yaw_reward
             + step_penalty
-            + smooth_pen
-            + vel_pen
+            # + smooth_pen
+            # + vel_pen
             + goal_reward  # 新增
             + goal_progress  # 新增
             + hold_bonus  # 新增
-            + drop_penalty  # 新增
+            # + drop_penalty  # 新增
             + goal_success_reward  # 新增
         )
         # mild clipping for world-model stability
@@ -854,6 +866,8 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             "metrics/e_lat": e_lat.mean(),
             "metrics/e_ax": e_ax.mean(),
             "metrics/ee_dist": ee_dist.mean(),
+            "metrics/ee_z_local": ee_z_local.mean(),
+            "metrics/out_z": out_z.mean(),
             "metrics/g_lat": g_lat.mean(),
             "metrics/g_close": g_close.mean(),
             "metrics/lift": object_lift.mean(),
@@ -1125,7 +1139,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
                 obj_goal_dist,
                 ee_goal_dist,
                 # 5. 环境约束
-                margin_to_wall,
+                # margin_to_wall,
             ),
             dim=-1,
         )

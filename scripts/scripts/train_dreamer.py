@@ -1,6 +1,7 @@
 import argparse
 import collections
 import functools
+import math
 import numpy as np
 import pathlib
 import sys
@@ -10,7 +11,6 @@ from tqdm import trange
 import ruamel.yaml as yaml
 
 sys.path.append("scripts")
-from torch import distributions as torchd
 
 import dreamerv3_torch.dreamer as dreamer
 import dreamerv3_torch.tools as tools
@@ -70,7 +70,13 @@ def main(config):
 	# 统计训练数据中已存在的步数，用于日志起始 step
 	step = count_steps(config.traindir)
 	# logger 中的 step 是“环境步数”，所以乘以 action_repeat
-	logger = tools.Logger(logdir, config.action_repeat * step)
+	logger = tools.Logger(
+		logdir,
+		config.action_repeat * step,
+		use_wandb=getattr(config, "use_wandb", True),
+		use_tensorboard=getattr(config, "use_tensorboard", True),
+		tensorboard_subdir=getattr(config, "tensorboard_subdir", "tb"),
+	)
 
 	# 保存当前配置（便于复现实验）
 	logger.config(vars(config))
@@ -129,26 +135,114 @@ def main(config):
 			random_actor = tools.OneHotDist(
 				torch.zeros(config.num_actions).repeat(config.envs, 1)
 			)
+
+			def random_agent(o, d, s):
+				"""
+				o: 观测 observation
+				d: done 标志
+				s: 内部状态（这里不用）
+				"""
+				action = random_actor.sample()
+				logprob = random_actor.log_prob(action)
+				return {"action": action, "logprob": logprob}, None
 		else:
-			# 连续动作空间，使用 Uniform(low, high) 随机采样
-			random_actor = torchd.independent.Independent(
-				torchd.uniform.Uniform(
-					torch.tensor(acts.low).repeat(config.envs, 1),
-					torch.tensor(acts.high).repeat(config.envs, 1),
-				),
-				1,
+			# 连续动作空间：默认使用“任务引导 prefill”减少动作长期跑飞
+			device = torch.device(config.device)
+			low = torch.tensor(acts.low, dtype=torch.float32, device=device)
+			high = torch.tensor(acts.high, dtype=torch.float32, device=device)
+			prefill_policy = str(getattr(config, "prefill_policy", "guided")).lower()
+			prefill_noise = float(getattr(config, "prefill_noise", 0.20))
+			prefill_eps_random = float(getattr(config, "prefill_eps_random", 0.15))
+			prefill_eps_random = float(np.clip(prefill_eps_random, 0.0, 1.0))
+
+			print(
+				f"Prefill policy: {prefill_policy} "
+				f"(noise={prefill_noise:.3f}, eps_random={prefill_eps_random:.3f})"
 			)
 
-		# 随机策略：只负责生成随机动作和对应的 logprob
-		def random_agent(o, d, s):
-			"""
-			o: 观测 observation
-			d: done 标志
-			s: 内部状态（这里不用）
-			"""
-			action = random_actor.sample()
-			logprob = random_actor.log_prob(action)
-			return {"action": action, "logprob": logprob}, None
+			def _sample_uniform(n):
+				return low.unsqueeze(0) + (high - low).unsqueeze(0) * torch.rand(
+					n, config.num_actions, device=device
+				)
+
+			def random_agent(o, d, s):
+				"""
+				o: 观测 observation
+				d: done 标志
+				s: 内部状态（这里不用）
+				"""
+				policy_obs = o.get("policy", None) if isinstance(o, dict) else None
+				if torch.is_tensor(policy_obs):
+					policy_obs = policy_obs.to(device)
+					nenv = policy_obs.shape[0]
+				else:
+					nenv = config.envs
+
+				# baseline: 纯随机均匀采样
+				action_uniform = _sample_uniform(nenv)
+				action = action_uniform
+
+				# guided prefill 只在具备 policy 向量且动作为5维任务动作时启用
+				if (
+					prefill_policy == "guided"
+					and torch.is_tensor(policy_obs)
+					and policy_obs.ndim == 2
+					and config.num_actions >= 5
+				):
+					dim = policy_obs.shape[-1]
+					# 当前任务 observation 结构: 24 + 2 * num_joints
+					if dim >= 24 and (dim - 24) % 2 == 0:
+						num_joints = (dim - 24) // 2
+
+						idx_ds = 5 + 2 * num_joints
+						idx_dr = 6 + 2 * num_joints
+						idx_cos_dth = 7 + 2 * num_joints
+						idx_sin_dth = 8 + 2 * num_joints
+						idx_cos_dyaw = 9 + 2 * num_joints
+						idx_sin_dyaw = 10 + 2 * num_joints
+						idx_object_lift = 11 + 2 * num_joints
+						idx_g_close = 13 + 2 * num_joints
+						idx_is_captured = 14 + 2 * num_joints
+
+						ds = policy_obs[:, idx_ds]
+						dr = policy_obs[:, idx_dr]
+						dth = torch.atan2(policy_obs[:, idx_sin_dth], policy_obs[:, idx_cos_dth])
+						dyaw = torch.atan2(policy_obs[:, idx_sin_dyaw], policy_obs[:, idx_cos_dyaw])
+						object_lift = policy_obs[:, idx_object_lift]
+						g_close = policy_obs[:, idx_g_close].clamp(0.0, 1.0)
+						is_captured = policy_obs[:, idx_is_captured] > 0.5
+
+						guided = action_uniform.clone()
+						# 轴向/径向/角度: 按相对误差方向走，并加噪声保留探索
+						guided[:, 0] = torch.tanh(ds / 0.010)
+						guided[:, 1] = torch.tanh(dr / 0.003)
+						guided[:, 2] = 0.7 * torch.tanh(dth / 0.60)
+
+						# 立方体yaw对称（每90度等价）
+						yaw_period = 0.5 * math.pi
+						dyaw_sym = torch.remainder(dyaw + 0.5 * yaw_period, yaw_period) - 0.5 * yaw_period
+						guided[:, 3] = 0.6 * torch.tanh(dyaw_sym / 0.35)
+
+						# 抓手：接近抓取/已捕获/已抬起 -> 关；否则开
+						should_close = (g_close > 0.45) | is_captured | (object_lift > 0.002)
+						guided[:, 4] = torch.where(
+							should_close,
+							torch.ones_like(guided[:, 4]),
+							-torch.ones_like(guided[:, 4]),
+						)
+
+						action = torch.clamp(
+							guided + prefill_noise * torch.randn_like(guided), -1.0, 1.0
+						)
+
+						# 保留一部分纯随机，避免预填充过于“脚本化”
+						if prefill_eps_random > 0.0:
+							mask = torch.rand(nenv, device=device) < prefill_eps_random
+							if mask.any():
+								action[mask] = action_uniform[mask]
+
+				logprob = torch.zeros(nenv, dtype=torch.float32, device=device)
+				return {"action": action, "logprob": logprob}, None
 
 		# 使用随机策略在环境中采集 prefill 步的数据，并写入 traindir
 		state = tools.simulate_vecenv(
