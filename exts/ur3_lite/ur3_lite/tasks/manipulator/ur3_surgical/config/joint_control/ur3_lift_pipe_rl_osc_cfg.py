@@ -24,7 +24,7 @@ from .utils.robot_ik_fun import DifferentialInverseKinematicsActionCfg
 class Ur3LiftPipeEnvCfg(DirectRLEnvCfg):
     
     # env
-    episode_length_s = 20
+    episode_length_s = 4
     decimation = 2  # 5
     action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(5,))
     use_image_obs = False

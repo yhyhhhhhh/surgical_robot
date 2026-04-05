@@ -76,7 +76,7 @@ class FSMState(IntEnum):
 class FSMCfg:
     # ---- 全局速度倍率 ----
     # >1.0 整体加速，<1.0 整体减速
-    global_motion_speed_scale: float = 1.5
+    global_motion_speed_scale: float = 2.5
 
     # ---- 位置/阈值 ----
     s_prepare: float = 0.0255        # 比初始位轻退 1.6 mm，作为局部安全准备位
@@ -144,13 +144,13 @@ class ObsLayout:
     @staticmethod
     def infer_from_policy_dim(policy_dim: int) -> "ObsLayout":
         # 来自你当前 obs 拼接结构
-        # fixed = 24, variable = 2 * num_joints
-        if (policy_dim - 24) % 2 != 0:
+        # fixed = 23, variable = 2 * num_joints
+        if (policy_dim - 23) % 2 != 0:
             raise ValueError(
                 f"Cannot infer num_joints from policy_dim={policy_dim}. "
-                f"Expected policy_dim = 24 + 2 * num_joints."
+                f"Expected policy_dim = 23 + 2 * num_joints."
             )
-        return ObsLayout(num_joints=(policy_dim - 24) // 2)
+        return ObsLayout(num_joints=(policy_dim - 23) // 2)
 
 
 # =========================
@@ -260,7 +260,7 @@ class SafeGraspFSM:
         goal_vec_ee = x[:, 18 + 2 * J : 21 + 2 * J]
         obj_goal_dist = x[:, 21 + 2 * J]
         ee_goal_dist = x[:, 22 + 2 * J]
-        margin_to_wall = x[:, 23 + 2 * J]
+        # margin_to_wall = x[:, 23 + 2 * J]
 
         dth = torch.atan2(sin_dth, cos_dth)
         dyaw_raw = torch.atan2(sin_dyaw, cos_dyaw)
@@ -284,7 +284,7 @@ class SafeGraspFSM:
             "goal_vec_ee": goal_vec_ee,
             "obj_goal_dist": obj_goal_dist,
             "ee_goal_dist": ee_goal_dist,
-            "margin_to_wall": margin_to_wall,
+            # "margin_to_wall": margin_to_wall,
         }
 
     @staticmethod
@@ -316,10 +316,8 @@ class SafeGraspFSM:
 
         # ===== APPROACH -> INSERT =====
         m = self.state == int(FSMState.APPROACH)
-        ready = (
-            (o["r_e"] < cfg.r_center_strict)
-            & (o["margin_to_wall"] > cfg.margin_soft)
-        )
+        ready = o["r_e"] < cfg.r_center_strict
+        
         self._set_state(m & ready, FSMState.INSERT)
 
         # ===== INSERT -> COARSE_ALIGN =====
@@ -476,7 +474,7 @@ class SafeGraspFSM:
         if m.any():
             a0 = self._scaled(o["ds"][m] - cfg.pregrasp_offset, tol=0.004, max_abs=float(self.max_insert[0]))
             # 靠壁时禁止继续前插
-            a0 = torch.where(o["margin_to_wall"][m] < cfg.margin_soft, torch.minimum(a0, torch.zeros_like(a0)), a0)
+            # a0 = torch.where(o["margin_to_wall"][m] < cfg.margin_soft, torch.minimum(a0, torch.zeros_like(a0)), a0)
 
             actions[m, 0] = a0
             actions[m, 1] = self._scaled(o["dr"][m], tol=0.002, max_abs=float(self.max_insert[1]))

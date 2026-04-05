@@ -136,12 +136,12 @@ class ObsLayout:
 
     @staticmethod
     def infer_from_policy_dim(policy_dim: int) -> "ObsLayout":
-        if (policy_dim - 24) % 2 != 0:
+        if (policy_dim - 27) % 2 != 0:
             raise ValueError(
                 f"Cannot infer num_joints from policy_dim={policy_dim}. "
                 f"Expected policy_dim = 24 + 2 * num_joints."
             )
-        return ObsLayout(num_joints=(policy_dim - 24) // 2)
+        return ObsLayout(num_joints=(policy_dim - 27) // 2)
 
 
 # =========================

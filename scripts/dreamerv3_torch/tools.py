@@ -641,7 +641,7 @@ def simulate_vecenv(
                     logger.scalar(key, float(value.item()))
 
                 if not is_eval:
-                    save_new_finished_episodes(cache, "/home/yhy/IsaacLabExtensionTemplate_lite/data2/")
+                    save_new_finished_episodes(cache, "/home/yhy/IsaacLabExtensionTemplate_lite/data3/")
                     logger.scalar(f"训练返回", score)
                     logger.scalar(f"训练步长", length)
                     logger.scalar(f"训练回合", len(cache))

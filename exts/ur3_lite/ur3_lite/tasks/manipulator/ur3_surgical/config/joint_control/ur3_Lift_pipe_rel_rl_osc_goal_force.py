@@ -159,10 +159,8 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
 
         self.last_actions = torch.zeros(self.num_envs, 5, device=self.device)
         self.cur_actions = torch.zeros(self.num_envs, 5, device=self.device)
-        # Lift-success hysteresis (dense reward + anti-jitter around threshold).
-        self.success_on_thr = 0.005
-        self.success_off_thr = 0.0035
-        self.success_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # Direct lift-success threshold used by the dense success bonus.
+        self.success_thr = 0.005
         # failure termination on excessive contact force (can be overridden from cfg)
         self.pipe_force_fail_thr = 2.0
         self.bottom_force_fail_thr = 2.0
@@ -501,13 +499,10 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         delta_th = delta_pipe[:, 2]
         delta_yaw = delta_pipe[:, 3]   # 注意：这里用缩放后的 yaw
 
-        # 3) 更新目标位置
-        s_tgt = torch.clamp(s_cur + delta_s, min=-0.01, max=self.pipe_length)
-        r_tgt = torch.clamp(
-            r_cur + delta_r,
-            min=0.0,
-            max=self.pipe_radius - self.pipe_safety_margin,
-        )
+
+
+        s_tgt = s_cur + delta_s
+        r_tgt = r_cur + delta_r
         th_tgt = th_cur + delta_th
 
         x_r_new = r_tgt * torch.cos(th_tgt)
@@ -777,22 +772,13 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         step_penalty = -0.002
 
         # ------------------- 6) 抬起与成功奖励 -------------------
-        lift_success_thr = self.success_on_thr
+        lift_success_thr = self.success_thr
         # 连续抬起奖励 (鼓励它越抬越高)
         lift_reward = 5.0 * torch.clamp(object_lift / lift_success_thr, 0.0, 1.0)
 
-        # Hysteresis state:
-        # on  when lift > 5.0mm, off when lift < 3.5mm, keep state in-between.
-        success_on = object_lift > self.success_on_thr
-        success_off = object_lift < self.success_off_thr
-        success_active = torch.where(
-            success_on, torch.ones_like(self.success_active), self.success_active
-        )
-        success_active = torch.where(
-            success_off, torch.zeros_like(success_active), success_active
-        )
-        self.success_active = success_active
-        success_reward = 4.0 * success_active.float()
+        # Direct success: current step gets the bonus only when the lift threshold is met.
+        success = object_lift > self.success_thr
+        success_reward = 4.0 * success.float()
         # ------------------- 动作惩罚 -------------------
         dact = self.cur_actions - self.last_actions
         smooth_pen = -0.05 * (dact[:, :4] ** 2).sum(dim=1) - 0.02 * (
@@ -861,7 +847,7 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
             "reward/lift": lift_reward.mean(),
             "reward/success": success_reward.mean(),
             "reward/goal_success": goal_success_reward.mean(),
-            "metrics/success_active_rate": self.success_active.float().mean(),
+            "metrics/success_rate": success.float().mean(),
             "goal_reward": goal_reward.mean(),
             "metrics/e_lat": e_lat.mean(),
             "metrics/e_ax": e_ax.mean(),
@@ -942,7 +928,6 @@ class Ur3LiftNeedleEnv(DirectRLEnv):
         # gripper reset
         self.gripper_cmd[env_ids] = -0.10
         self.last_actions[env_ids] = 0.0
-        self.success_active[env_ids] = False
         self.force_fail[env_ids] = False
 
         # goal reset
